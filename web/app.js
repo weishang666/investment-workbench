@@ -449,29 +449,63 @@ async function alertsPage(status = S.alertStatus || 'open', type = S.alertType |
 // ================= 群聊洞察 =================
 async function chatPage(minutes = S.chatMinutes || 60) {
   S.ctx = { page: 'chat' }; S.chatMinutes = minutes;
-  const [hot, groups, msgs] = await Promise.all([api(`/api/chat/hot?minutes=${minutes}`), api('/api/chat/groups'), api('/api/chat/messages?limit=40')]);
+  const feed = S.chatFeed || '';
+  const [hot, view, msgs] = await Promise.all([api(`/api/chat/hot?minutes=${minutes}`), api('/api/chat/view'), api(`/api/chat/messages?limit=60${feed ? `&group=${encodeURIComponent(feed)}` : ''}`)]);
   const W = [[60, '1 小时'], [720, '半日'], [1440, '每日'], [4320, '3 天']];
+  const srcName = (id) => view.sources.find((x) => x.id === id)?.name;
+  const loose = view.channels.filter((c) => !c.sourceId && !c.hidden);
+  const feedOpts = [['', '全部来源'], ...view.sources.map((x) => [`src:${x.id}`, `【来源】${x.name}`]), ...loose.map((c) => [c.id, c.name])];
+  // 频道按服务器（名称里第一个"/"之前）分组
+  const servers = new Map();
+  for (const c of view.channels) { const k = c.name.includes('/') ? c.name.split('/')[0] : '其他'; if (!servers.has(k)) servers.set(k, []); servers.get(k).push(c); }
+  const short = (c) => (c.name.includes('/') ? c.name.slice(c.name.indexOf('/') + 1) : c.name);
+  const chRow = (c) => `<tr class="${c.hidden ? 'faint' : ''}"><td>${esc(short(c))}</td><td class="num">${c.messages}</td><td class="small">${c.topUsers.map((u) => esc(u.user)).join('、')}</td>
+    <td><select data-src="${esc(c.id)}"><option value="">—</option>${view.sources.map((x) => `<option value="${esc(x.id)}" ${x.id === c.sourceId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></td>
+    <td class="num"><label class="small"><input type="checkbox" data-hg="${esc(c.id)}" ${c.hidden ? 'checked' : ''} /> 屏蔽</label></td></tr>`;
   app.innerHTML = `<div class="two-col"><div>
     <div class="panel"><div class="panel-head"><h3>跨群热度</h3><span class="spacer"></span><div class="tabs">${W.map(([m, l]) => `<button class="tab ${m === minutes ? 'active' : ''}" data-m="${m}">${l}</button>`).join('')}</div></div>
       <div class="table-wrap"><table class="grid"><thead><tr><th>标的</th><th class="num">有效讨论群</th><th class="num">独立讨论群</th><th class="num">人数</th><th class="num">消息</th><th class="num">热度变化</th><th>话题</th></tr></thead><tbody>
       ${hot.map((s) => `<tr class="clickable" data-go="${esc(s.symbol)}"><td><b>${esc(code(s.symbol))}</b></td><td class="num">${s.effectiveGroupCount}/${s.groupCount}</td><td class="num">${s.independentGroupCount}</td><td class="num">${s.userCount}</td><td class="num">${s.messageCount}</td><td class="num ${cls(s.heatChangePct)}">${s.heatChangePct == null ? '新' : `${s.heatChangePct}%`}</td><td class="small">${s.topics.slice(0, 2).map((t) => esc(t.name)).join('、')}${s.spreading.length ? ' · <span style="color:var(--unverified)">转发传播</span>' : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">该时段没有标的讨论</td></tr>'}
       </tbody></table></div>
-      <div class="small faint" style="margin-top:8px">有效讨论：单群 ≥3 条相关消息或 ≥2 名独立用户。独立讨论：剔除被复制到多个群的相同内容后仍满足有效讨论。规则阈值可在"规则与任务"中修改。</div>
+      <div class="small faint" style="margin-top:8px">有效讨论：单群 ≥3 条相关消息或 ≥2 名独立用户。独立讨论：剔除被复制到多个群的相同内容后仍满足有效讨论。同一来源下的多个频道算作一个群，屏蔽的频道和人不参与统计。规则阈值可在"规则与任务"中修改。</div>
       <div class="row" style="margin-top:10px"><button class="btn" data-ask="总结一下最近${W.find((w) => w[0] === minutes)[1]}群里讨论最多的股票">让 OpenClaw 生成群摘要</button></div>
       <div class="disclaimer">群聊热度仅代表关注度，不代表投资建议或买卖信号。</div></div>
-    <div class="panel"><div class="panel-head"><h3>已接入的群</h3></div>
-      <table class="grid"><thead><tr><th>群</th><th>平台</th><th>接入方式</th></tr></thead><tbody>${groups.map((g) => `<tr><td>${esc(g.name)}</td><td>${esc(g.platform)}</td><td class="small">${esc({ import: '导入聊天记录', bot: '平台机器人', api: '官方 API', 'discord-local': 'discord-local 同步' }[g.ingest] || g.ingest)}</td></tr>`).join('')}</tbody></table>
-      <div class="small faint" style="margin-top:8px">群消息接入由 Connector 层负责（官方 API / 机器人 / 导入记录），AI 只处理已入库的标准消息。可在"自选与导入"页导入 discord-local 的 jsonl 文件。</div></div>
+    <div class="panel"><div class="panel-head"><h3>来源与屏蔽</h3><span class="spacer"></span><input id="src-new" placeholder="新来源名，如 硅谷照见" style="width:150px" /><button class="btn sm" id="src-add">新建来源</button></div>
+      <div class="small muted" style="margin-bottom:8px">把同一个博主的多个频道归到一个"来源"里合并查看；不想看的频道勾选屏蔽，不想看的人在右侧消息里点"屏蔽此人"。</div>
+      <div class="row wrap" style="margin-bottom:8px">${view.sources.map((x) => `<span class="chip">${esc(x.name)} · ${x.groupIds.length} 个频道 <a href="#" data-rnsrc="${esc(x.id)}" title="改名">✎</a> <a href="#" data-delsrc="${esc(x.id)}" title="删除来源">×</a></span>`).join('') || '<span class="small faint">还没有来源</span>'}</div>
+      ${[...servers].map(([k, list]) => `<details class="evidence" ${S.openServer === k ? 'open' : ''} data-server="${esc(k)}"><summary><b>${esc(k)}</b> · ${list.length} 个频道${list.some((c) => c.hidden) ? ` · 已屏蔽 ${list.filter((c) => c.hidden).length}` : ''}</summary>
+        <div class="table-wrap"><table class="grid"><thead><tr><th>频道</th><th class="num">消息</th><th>主要发言人</th><th>来源</th><th></th></tr></thead><tbody>${list.sort((x, y) => y.messages - x.messages).map(chRow).join('')}</tbody></table></div></details>`).join('')}
+      <div style="margin-top:10px"><b class="small">已屏蔽的人</b> ${view.hiddenUsers.map((u) => `<span class="chip">${esc(u)} <a href="#" data-unhu="${esc(u)}" title="取消屏蔽">×</a></span>`).join('') || '<span class="small faint">无</span>'}</div></div>
   </div><div>
-    <div class="panel"><div class="panel-head"><h3>最新消息</h3><span class="tag tag-unverified">未经证实来源</span><span class="spacer"></span><input id="chat-q" placeholder="搜索内容或标的" /></div><div id="chat-msgs">${msgList(msgs)}</div></div>
+    <div class="panel"><div class="panel-head"><h3>最新消息</h3><span class="tag tag-unverified">未经证实来源</span><span class="spacer"></span>
+      <select id="chat-feed">${feedOpts.map(([v, l]) => `<option value="${esc(v)}" ${v === feed ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select><input id="chat-q" placeholder="搜索内容或标的" /></div><div id="chat-msgs">${msgList(msgs)}</div></div>
   </div></div>`;
+
+  const putView = async (patch) => { await api('/api/chat/view', { method: 'PUT', body: patch }); chatPage(minutes); };
+  const sourcesWith = (fn) => view.sources.map((x) => ({ ...x, groupIds: [...x.groupIds] })).map(fn);
   app.querySelectorAll('[data-m]').forEach((b) => { b.onclick = () => chatPage(Number(b.dataset.m)); });
   app.querySelectorAll('[data-go]').forEach((el) => { el.onclick = () => { location.hash = `#/stock/${encodeURIComponent(el.dataset.go)}`; }; });
   app.querySelectorAll('[data-ask]').forEach((b) => { b.onclick = () => askAgent(b.dataset.ask); });
+  app.querySelectorAll('details[data-server]').forEach((d) => { d.ontoggle = () => { if (d.open) S.openServer = d.dataset.server; }; });
+  document.getElementById('chat-feed').onchange = (e) => { S.chatFeed = e.target.value; chatPage(minutes); };
+  document.getElementById('src-add').onclick = () => {
+    const name = document.getElementById('src-new').value.trim(); if (!name) return;
+    putView({ sources: [...view.sources, { name, groupIds: [] }] });
+  };
+  app.querySelectorAll('[data-delsrc]').forEach((a) => { a.onclick = (e) => { e.preventDefault(); if (!confirm('删除这个来源？其中的频道会恢复为单独显示。')) return; if (S.chatFeed === `src:${a.dataset.delsrc}`) S.chatFeed = ''; putView({ sources: view.sources.filter((x) => x.id !== a.dataset.delsrc) }); }; });
+  app.querySelectorAll('[data-rnsrc]').forEach((a) => { a.onclick = (e) => { e.preventDefault(); const cur = srcName(a.dataset.rnsrc); const name = prompt('来源名称', cur); if (!name || name.trim() === cur) return; putView({ sources: sourcesWith((x) => (x.id === a.dataset.rnsrc ? { ...x, name: name.trim() } : x)) }); }; });
+  app.querySelectorAll('[data-src]').forEach((sel) => { sel.onchange = () => {
+    const ch = sel.dataset.src;
+    putView({ sources: sourcesWith((x) => ({ ...x, groupIds: x.id === sel.value ? [...x.groupIds.filter((g) => g !== ch), ch] : x.groupIds.filter((g) => g !== ch) })) });
+  }; });
+  app.querySelectorAll('[data-hg]').forEach((cb) => { cb.onchange = () => putView({ hiddenGroups: cb.checked ? [...view.hiddenGroups, cb.dataset.hg] : view.hiddenGroups.filter((g) => g !== cb.dataset.hg) }); });
+  app.querySelectorAll('[data-unhu]').forEach((a) => { a.onclick = (e) => { e.preventDefault(); putView({ hiddenUsers: view.hiddenUsers.filter((u) => u !== a.dataset.unhu) }); }; });
+  const bindHide = () => document.querySelectorAll('#chat-msgs [data-hu]').forEach((b) => { b.onclick = () => { if (confirm(`屏蔽「${b.dataset.hu}」？之后不再显示此人的消息，也不计入热度。可在"来源与屏蔽"里取消。`)) putView({ hiddenUsers: [...view.hiddenUsers, b.dataset.hu] }); }; });
+  bindHide();
   const q = document.getElementById('chat-q');
-  q.onkeydown = async (e) => { if (e.key === 'Enter') document.getElementById('chat-msgs').innerHTML = msgList(await api(`/api/chat/messages?q=${encodeURIComponent(q.value)}&limit=50`)); };
+  q.onkeydown = async (e) => { if (e.key === 'Enter') { document.getElementById('chat-msgs').innerHTML = msgList(await api(`/api/chat/messages?q=${encodeURIComponent(q.value)}&limit=50${feed ? `&group=${encodeURIComponent(feed)}` : ''}`)); bindHide(); } };
 }
-const msgList = (msgs) => msgs.map((m) => `<div class="msg"><div class="who">${esc(m.groupName)} · ${esc(m.user)} · ${fmtTime(m.time)} <span class="faint">(${esc(m.platform)})</span>${m.symbols?.length ? ` ${m.symbols.map((s) => `<a class="chip" href="#/stock/${encodeURIComponent(s)}">${esc(code(s))}</a>`).join('')}` : ''}</div>${esc(m.content)}</div>`).join('') || '<div class="empty">没有消息</div>';
+const msgList = (msgs) => msgs.map((m) => `<div class="msg"><div class="who">${esc(m.groupName)}${m.channel ? ` <span class="faint">› ${esc(m.channel.includes('/') ? m.channel.slice(m.channel.indexOf('/') + 1) : m.channel)}</span>` : ''} · ${esc(m.user)} · ${fmtTime(m.time)} <span class="faint">(${esc(m.platform)})</span>${m.symbols?.length ? ` ${m.symbols.map((s) => `<a class="chip" href="#/stock/${encodeURIComponent(s)}">${esc(code(s))}</a>`).join('')}` : ''}${S.ctx?.page === 'chat' ? ` <button class="btn sm ghost" data-hu="${esc(m.user)}" title="不再显示此人的消息">屏蔽此人</button>` : ''}</div>${esc(m.content)}</div>`).join('') || '<div class="empty">没有消息</div>';
 
 // ================= 自选与导入 =================
 async function watchlistPage() {

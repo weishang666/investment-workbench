@@ -36,6 +36,40 @@ export function tagMessages(messages = db.chatMessages) {
   return messages;
 }
 
+// ---------- 用户的群聊视图：来源合并 + 屏蔽 ----------
+// 来源（source）：把属于同一个博主/分类的多个频道合并成一个"群"来看，跨群热度里也只算一个群。
+// 屏蔽：hiddenGroups 为不想看的频道，hiddenUsers 为不想看的发言人（按昵称）。
+// Discord 的频道分类不在 discord-local 的消息里，所以来源由用户在"群聊洞察"页手动归组。
+const DEFAULT_SOURCES = [
+  { id: 'guigu', name: '硅谷照见', channels: ['美股聚合群/会员群', '美股聚合群/禁言群'] },
+  { id: 'maojie', name: '猫姐', channels: ['猫姐盘中总结', '美股聚合群/猫姐聊天区', '美股聚合群/禅动买卖点指标base测试区'] },
+  { id: 'tiange', name: '天哥复利之道', channels: ['天道复利之道', '美股聚合群/会员聊天区'] },
+];
+
+export function chatView() {
+  if (!db.settings.chatView) {
+    const idOf = (name) => db.chatGroups.find((g) => g.name === name)?.id;
+    db.settings.chatView = {
+      sources: DEFAULT_SOURCES.map((s) => ({ id: s.id, name: s.name, groupIds: s.channels.map(idOf).filter(Boolean) })),
+      hiddenGroups: [], hiddenUsers: [],
+    };
+  }
+  return db.settings.chatView;
+}
+
+/** 应用视图后的消息（副本）：去掉屏蔽的频道和人；同一来源的频道合并为一个群，原频道保留在 channel / channelId。 */
+export function visibleMessages(list = db.chatMessages) {
+  tagMessages(list);
+  const v = chatView();
+  const hg = new Set(v.hiddenGroups); const hu = new Set(v.hiddenUsers);
+  const src = new Map();
+  for (const s of v.sources) for (const g of s.groupIds) src.set(g, s);
+  return list.filter((m) => !hg.has(m.groupId) && !hu.has(m.user)).map((m) => {
+    const s = src.get(m.groupId);
+    return s ? { ...m, groupId: `src:${s.id}`, groupName: s.name, channel: m.groupName, channelId: m.groupId } : m;
+  });
+}
+
 function inWindow(messages, start, end) {
   return messages.filter((m) => m.time >= start && m.time < end);
 }
@@ -111,11 +145,11 @@ function evidence(m) { return { id: m.id, groupName: m.groupName, user: m.user, 
 
 /** 窗口内所有被讨论标的的排行（大屏"群聊洞察"）。 */
 export function hotSymbols(now = new Date(), cfg = db.settings.chatHeat) {
-  tagMessages();
+  const msgs = visibleMessages();
   const start = new Date(now.getTime() - cfg.windowMinutes * 60000).toISOString();
   const syms = new Set();
-  for (const m of db.chatMessages) if (m.time >= start) m.symbols.forEach((s) => syms.add(s));
-  return [...syms].map((s) => symbolStats(s, db.chatMessages, cfg, now))
+  for (const m of msgs) if (m.time >= start) m.symbols.forEach((s) => syms.add(s));
+  return [...syms].map((s) => symbolStats(s, msgs, cfg, now))
     .sort((a, b) => b.effectiveGroupCount - a.effectiveGroupCount || b.messageCount - a.messageCount);
 }
 
@@ -141,10 +175,9 @@ export function runChatHeatRule(now = new Date()) {
 }
 
 export function searchChats({ query, symbol, groupId, since, limit = 30 } = {}) {
-  tagMessages();
-  let list = db.chatMessages;
+  let list = visibleMessages();
   if (symbol) list = list.filter((m) => m.symbols.includes(symbol));
-  if (groupId) list = list.filter((m) => m.groupId === groupId);
+  if (groupId) list = list.filter((m) => m.groupId === groupId || m.channelId === groupId);
   if (since) list = list.filter((m) => m.time >= since);
   if (query) {
     const ms = findMentions(query, db.instruments);
@@ -156,14 +189,14 @@ export function searchChats({ query, symbol, groupId, since, limit = 30 } = {}) 
 
 /** 群摘要的确定性部分（主题、热门标的、观点、未证实消息），由 Agent 进一步生成文字摘要。 */
 export function groupDigest({ groupId, minutes = 60, now = new Date() }) {
-  tagMessages();
+  const all = visibleMessages();
   const start = new Date(now.getTime() - minutes * 60000).toISOString();
-  const msgs = db.chatMessages.filter((m) => m.time >= start && (!groupId || m.groupId === groupId));
+  const msgs = all.filter((m) => m.time >= start && (!groupId || m.groupId === groupId || m.channelId === groupId));
   const symCount = {};
   for (const m of msgs) for (const s of m.symbols) symCount[s] = (symCount[s] || 0) + 1;
   const cfg = { ...db.settings.chatHeat, windowMinutes: minutes };
   const hot = Object.entries(symCount).sort((a, b) => b[1] - a[1]).slice(0, 5)
-    .map(([symbol, count]) => ({ symbol, count, stats: symbolStats(symbol, groupId ? msgs : db.chatMessages, cfg, now) }));
+    .map(([symbol, count]) => ({ symbol, count, stats: symbolStats(symbol, groupId ? msgs : all, cfg, now) }));
   return { groupId: groupId || 'all', minutes, messageCount: msgs.length, hot };
 }
 

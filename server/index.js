@@ -2,14 +2,14 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, load, save, flush, reset, instrument } from './store.js';
+import { db, load, save, flush, reset, instrument, uid } from './store.js';
 import { seed } from './seed.js';
 import { on } from './lib/bus.js';
 import { bars, MARKET_SOURCE } from './providers/market.js';
 import * as WL from './watchlist.js';
 import * as RS from './research.js';
 import { listAlerts, setStatus, counts } from './alerts.js';
-import { hotSymbols, symbolStats, searchChats, groupDigest, ingestMessages, tagMessages } from './rules/chatHeat.js';
+import { hotSymbols, symbolStats, searchChats, groupDigest, ingestMessages, tagMessages, chatView, visibleMessages } from './rules/chatHeat.js';
 import { searchNews } from './news.js';
 import { ask, listSessions, getSession, llmEnabled, engine } from './agent/agent.js';
 import { toolManifest, runTool } from './agent/tools.js';
@@ -98,7 +98,7 @@ route('GET', '/api/stock/:id', ({ id }) => {
     financials: RS.financialMetrics(id), earnings: RS.earningsChanges(id),
     filings: db.filings.filter((f) => f.symbol === id).sort((a, b) => b.filedAt.localeCompare(a.filedAt)),
     news: searchNews({ symbol: id, limit: 10 }),
-    chat: { stats: symbolStats(id, db.chatMessages, db.settings.chatHeat), daily: symbolStats(id, db.chatMessages, { ...db.settings.chatHeat, windowMinutes: 24 * 60 }), messages: searchChats({ symbol: id, limit: 30 }) },
+    chat: { stats: symbolStats(id, visibleMessages(), db.settings.chatHeat), daily: symbolStats(id, visibleMessages(), { ...db.settings.chatHeat, windowMinutes: 24 * 60 }), messages: searchChats({ symbol: id, limit: 30 }) },
     research: RS.getResearch(id), versions: RS.versions(id),
     analyses: RS.analyses(id), suggestions: db.aiSuggestions.filter((s) => s.symbol === id),
     hasCompanyKb: !!COMPANY_KB[id],
@@ -125,6 +125,46 @@ route('GET', '/api/chat/hot', (_, q) => hotSymbols(new Date(), { ...db.settings.
 route('GET', '/api/chat/messages', (_, q) => searchChats({ query: q.get('q') || undefined, symbol: q.get('symbol') || undefined, groupId: q.get('group') || undefined, limit: Number(q.get('limit') || 50) }));
 route('GET', '/api/chat/digest', (_, q) => groupDigest({ groupId: q.get('group') || undefined, minutes: Number(q.get('minutes') || 60) }));
 route('GET', '/api/chat/groups', () => db.chatGroups);
+// 群聊视图：来源合并 + 屏蔽频道/发言人
+route('GET', '/api/chat/view', () => {
+  const v = chatView();
+  const stat = new Map();
+  const users = new Map();
+  for (const m of db.chatMessages) {
+    if (!stat.has(m.groupId)) stat.set(m.groupId, { messages: 0, last: '', users: new Map() });
+    const g = stat.get(m.groupId);
+    g.messages++; if (m.time > g.last) g.last = m.time;
+    g.users.set(m.user, (g.users.get(m.user) || 0) + 1);
+    users.set(m.user, (users.get(m.user) || 0) + 1);
+  }
+  const top = (map, n) => [...map].sort((a, b) => b[1] - a[1]).slice(0, n).map(([user, count]) => ({ user, count }));
+  return {
+    ...v,
+    channels: db.chatGroups.map((g) => {
+      const s = stat.get(g.id);
+      return { ...g, messages: s?.messages || 0, lastTime: s?.last || null, topUsers: s ? top(s.users, 3) : [],
+        sourceId: v.sources.find((x) => x.groupIds.includes(g.id))?.id || null, hidden: v.hiddenGroups.includes(g.id) };
+    }),
+    users: top(users, 300).map((u) => ({ ...u, hidden: v.hiddenUsers.includes(u.user) })),
+  };
+});
+route('PUT', '/api/chat/view', (_, __, b) => {
+  const v = chatView();
+  const ids = new Set(db.chatGroups.map((g) => g.id));
+  const strs = (a) => [...new Set((Array.isArray(a) ? a : []).map(String).filter(Boolean))];
+  if (b.sources) {
+    const taken = new Set();
+    v.sources = b.sources.filter((s) => s && String(s.name || '').trim()).map((s) => ({
+      id: String(s.id || uid('s')), name: String(s.name).trim().slice(0, 40),
+      // 一个频道只能属于一个来源
+      groupIds: strs(s.groupIds).filter((g) => ids.has(g) && !taken.has(g) && taken.add(g)),
+    }));
+  }
+  if (b.hiddenGroups) v.hiddenGroups = strs(b.hiddenGroups);
+  if (b.hiddenUsers) v.hiddenUsers = strs(b.hiddenUsers);
+  save();
+  return v;
+});
 route('POST', '/api/chat/import', (_, __, b) => {
   // 方式三：导入聊天记录。支持 discord-local 的 jsonl，或标准 JSON 数组
   const list = b.format === 'discord-jsonl' ? parseJsonl(b.text, b.folder || '', b.tz) : JSON.parse(b.text);
