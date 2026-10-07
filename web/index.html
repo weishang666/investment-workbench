@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>个人投研工作台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23163a5f'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='%2359c3ff' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/"><span class="brand-mark"></span>个人投研工作台</a>
+    <nav class="nav">
+      <a href="#/" data-nav="dashboard">投资大屏</a>
+      <a href="#/macro" data-nav="macro">宏观指标</a>
+      <a href="#/alerts" data-nav="alerts">提醒中心 <span class="badge" id="nav-unread" hidden></span></a>
+      <a href="#/chat" data-nav="chat">群聊洞察</a>
+      <a href="#/watchlist" data-nav="watchlist">自选与导入</a>
+      <a href="#/settings" data-nav="settings">规则与任务</a>
+    </nav>
+    <div class="topbar-right">
+      <div class="search">
+        <input id="global-search" placeholder="搜索代码 / 名称，如 NVDA、英伟达" autocomplete="off" />
+        <div class="search-results" id="search-results" hidden></div>
+      </div>
+      <span class="pill" id="meta-pill" title="">加载中</span>
+    </div>
+  </header>
+
+  <main id="app"></main>
+
+  <!-- 全局 AI Agent：右下角数字人入口 -->
+  <button class="agent-fab" id="agent-fab" aria-label="打开 OpenClaw AI 助手">
+    <svg viewBox="0 0 64 64" aria-hidden="true">
+      <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5ec8ff"/><stop offset="1" stop-color="#6c5cff"/></linearGradient></defs>
+      <circle cx="32" cy="32" r="30" fill="url(#g1)"/>
+      <circle cx="32" cy="27" r="12" fill="#eaf6ff"/>
+      <path d="M14 52c4-9 11-13 18-13s14 4 18 13" fill="#eaf6ff"/>
+      <circle cx="27.5" cy="26" r="2" fill="#16324f" class="eye"/><circle cx="36.5" cy="26" r="2" fill="#16324f" class="eye"/>
+      <path d="M27 31.5c3 2.5 7 2.5 10 0" stroke="#16324f" stroke-width="2" fill="none" stroke-linecap="round"/>
+    </svg>
+    <span class="fab-label">OpenClaw</span>
+  </button>
+  <section class="agent-panel" id="agent-panel" hidden aria-label="OpenClaw AI 助手"></section>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

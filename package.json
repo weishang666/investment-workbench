@@ -1,0 +1,20 @@
+{
+  "name": "invest-workbench",
+  "version": "0.1.0",
+  "description": "个人投资研究与监控工作台（MVP）",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test test/core.test.js",
+    "reset": "node server/index.js --reset-only",
+    "openclaw:install": "node scripts/install-openclaw-skill.mjs"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "*"
+  }
+}
