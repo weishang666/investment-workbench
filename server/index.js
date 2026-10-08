@@ -1,11 +1,14 @@
 // HTTP 服务：REST API + SSE 实时推送 + 静态前端。零依赖（Node 20+）。
+import { loadEnv } from './lib/env.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, load, save, flush, reset, instrument, uid } from './store.js';
 import { seed } from './seed.js';
 import { on } from './lib/bus.js';
-import { bars, MARKET_SOURCE } from './providers/market.js';
+import { bars, marketSource } from './providers/market.js';
+import * as GM from './providers/gangtiseMarket.js';
+import { usageToday } from './providers/gangtise.js';
 import * as WL from './watchlist.js';
 import * as RS from './research.js';
 import { listAlerts, setStatus, counts } from './alerts.js';
@@ -20,6 +23,7 @@ import { SESSION_LABEL } from './lib/sessions.js';
 import { COMPANY_KB } from './agent/companyKb.js';
 import { companyResearch } from './agent/analysis.js';
 
+loadEnv(); // 读取根目录 .env（Gangtise 密钥等），已存在的环境变量优先
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const WEB = path.join(ROOT, 'web');
 const PORT = Number(process.env.PORT || 3000);
@@ -41,7 +45,20 @@ const quoteView = (id) => {
   return inst && q ? { ...inst, quote: { ...q, sessionLabel: SESSION_LABEL[q.session] } } : null;
 };
 
-route('GET', '/api/meta', () => ({ llm: llmEnabled() || OpenClaw.chatEnabled(), model: engine(), openclaw: { chat: OpenClaw.chatEnabled(), hooks: OpenClaw.hooksEnabled() }, marketSource: MARKET_SOURCE, discord: !!process.env.DISCORD_MESSAGES_DIR, mockSession: process.env.MOCK_SESSION || 'regular', mocked: ['行情', '新闻', '公告', '财务数据', '经济日历', process.env.DISCORD_MESSAGES_DIR ? null : '群聊'].filter(Boolean) }));
+route('GET', '/api/meta', () => {
+  const gts = GM.enabled();
+  return {
+    llm: llmEnabled() || OpenClaw.chatEnabled(), model: engine(), openclaw: { chat: OpenClaw.chatEnabled(), hooks: OpenClaw.hooksEnabled() },
+    marketSource: marketSource(gts), gangtise: gts ? { ...GM.pollState(), usage: usageToday() } : null,
+    discord: !!process.env.DISCORD_MESSAGES_DIR, mockSession: process.env.MOCK_SESSION || 'regular',
+    mocked: (gts ? ['美股 ETF / 宏观商品 / 外汇 / 加密行情', '新闻', '宏观经济日历'] : ['行情', '新闻', '公告', '财务数据', '经济日历']).concat(process.env.DISCORD_MESSAGES_DIR ? [] : ['群聊']),
+    real: gts ? ['股票 / 指数行情（Gangtise）', '日 K', '财报', '公告', '业绩日历'] : [],
+  };
+});
+route('GET', '/api/gangtise/status', () => ({ enabled: GM.enabled(), ...GM.pollState(), usage: usageToday() }));
+
+// 按需拉取 Gangtise 数据：超时就先返回已有数据（Mock 或上次缓存），后台继续拉
+const within = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(false), ms))]);
 
 // 大屏
 route('GET', '/api/dashboard', (_, q) => {
@@ -55,7 +72,10 @@ route('GET', '/api/dashboard', (_, q) => {
   return {
     macro: strip, macroCount: new Set(macroItems.map((i) => i.symbol)).size,
     news: db.events.slice(0, 12),
-    calendar: [...db.calendar].sort((a, b) => a.time.localeCompare(b.time)),
+    // 宏观日历全部展示；自选股财报日只展示未来 14 天内最近的 12 条
+    calendar: [...db.calendar.filter((c) => c.kind !== 'earnings'),
+      ...db.calendar.filter((c) => c.kind === 'earnings' && new Date(c.time) - Date.now() < 14 * 86400e3 && new Date(c.time) - Date.now() > -86400e3).sort((a, b) => a.time.localeCompare(b.time)).slice(0, 12)]
+      .sort((a, b) => a.time.localeCompare(b.time)),
     groups: stockGroups.map(({ items, ...g }) => ({ ...g, count: items.length, moved: items.filter((i) => Math.abs(db.quotes[i.symbol]?.changePct || 0) >= db.settings.priceMove.threshold).length })),
     group: sel ? { ...sel, items: sel.items.map((i) => ({ ...i, ...quoteView(i.symbol), moved: Math.abs(db.quotes[i.symbol]?.changePct || 0) >= db.settings.priceMove.threshold })) } : null,
     chat: hotSymbols().slice(0, 8).map((s) => ({ ...s, name: instrument(s.symbol)?.name })),
@@ -68,7 +88,10 @@ route('GET', '/api/macro', () => WL.groupsView().filter((g) => g.kind === 'macro
 
 // 行情
 route('GET', '/api/quote/:id', ({ id }) => quoteView(id) || notFound());
-route('GET', '/api/bars/:id', ({ id }, q) => ({ id, period: q.get('period') || '1M', ...bars(id, q.get('period') || '1M') }));
+route('GET', '/api/bars/:id', async ({ id }, q) => {
+  await within(GM.ensureDaily(id), 8000);
+  return { id, period: q.get('period') || '1M', ...bars(id, q.get('period') || '1M'), real: !!db.daily[id]?.real };
+});
 route('GET', '/api/instruments/search', (_, q) => WL.searchInstruments(q.get('q')).map((i) => quoteView(i.id)));
 
 // 自选
@@ -90,8 +113,9 @@ route('POST', '/api/import/watchlist-file', (_, __, b) => {
 });
 
 // 标的详情（研究档案）
-route('GET', '/api/stock/:id', ({ id }) => {
+route('GET', '/api/stock/:id', async ({ id }) => {
   const v = quoteView(id); if (!v) return notFound();
+  await within(Promise.all([GM.ensureFinancials(id), GM.ensureFilings(id)]), 10000);
   tagMessages();
   return {
     ...v,

@@ -65,3 +65,16 @@ export const SESSION_LABEL = { pre: '盘前', regular: '交易中', post: '盘�
 export function etHourMinute(date = new Date()) {
   return partsIn('America/New_York', date).minutes;
 }
+
+// 连续交易时段（当地时间分钟），用于计算当日交易进度
+const PROGRESS = { US: ['America/New_York', [[570, 960]]], HK: ['Asia/Hong_Kong', [[570, 720], [780, 960]]], CN: ['Asia/Shanghai', [[570, 690], [780, 900]]] };
+
+/** 当日已完成的交易时段比例（0–1）；不支持的市场返回 null */
+export function sessionProgress(market, date = new Date()) {
+  const def = PROGRESS[market];
+  if (!def) return null;
+  const { minutes } = partsIn(def[0], date);
+  const total = def[1].reduce((s, [a, b]) => s + b - a, 0);
+  const done = def[1].reduce((s, [a, b]) => s + Math.max(0, Math.min(minutes, b) - a), 0);
+  return done / total;
+}

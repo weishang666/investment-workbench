@@ -3,6 +3,7 @@
 import { db, uid, save, instrument } from '../store.js';
 import { on, emit } from '../lib/bus.js';
 import { tick } from '../providers/market.js';
+import * as GM from '../providers/gangtiseMarket.js';
 import { runPriceMoveRule, runVolumeRule, runLevelRule } from '../rules/priceMove.js';
 import { runChatHeatRule } from '../rules/chatHeat.js';
 import { runResearchStaleRule, addAnalysis, earningsChanges } from '../research.js';
@@ -204,6 +205,47 @@ function checkSchedule(now) {
   }
 }
 
+// ---------- Gangtise 真实数据 ----------
+// 行情每 60 秒轮询一次（免费接口），驱动异动 / 成交量规则；日 K 启动后后台预取；
+// 业绩日历与置顶股票的公告每天拉一次（按行计费，受 GANGTISE_DAILY_POINTS 日上限约束）。
+export async function runGangtisePoll(now = new Date(), opts) {
+  const changed = await GM.pollQuotes(now, opts);
+  if (changed.length) { runRules(now); emit('quotes', changed); save(); }
+  return changed.length;
+}
+
+export async function runGangtiseDaily(now = new Date()) {
+  // 记在 db 里，重启不会重复拉（按行计费）
+  const day = new Date(now.getTime() + 8 * 3600e3).toISOString().slice(0, 10);
+  if (db.gangtiseDailyAt === day) return;
+  db.gangtiseDailyAt = day;
+  try {
+    const n = await GM.refreshEarningsCalendar(watchedSymbols('stock'), now);
+    const pinned = [...new Set(db.watchlist.groups.filter((g) => g.kind === 'stock').flatMap((g) => g.items.filter((i) => i.pinned).map((i) => i.symbol)))];
+    for (const id of pinned) await GM.ensureFilings(id, { size: 5, now });
+    recordRun('Gangtise 每日同步', `业绩日历 ${n} 条，置顶股票公告 ${pinned.length} 只`);
+    runFilingJob(now); save();
+  } catch (e) { console.error('[gangtise] 每日同步失败：', e.message); }
+}
+
+export function startGangtise() {
+  if (!GM.enabled()) return () => {};
+  console.log('[gangtise] 已启用：股票 / 指数行情每 60 秒轮询，财报与公告按需拉取');
+  const boot = async () => {
+    await runGangtisePoll(new Date(), { force: true });
+    await runGangtiseDaily(new Date());
+    const n = await GM.preloadDaily();
+    console.log(`[gangtise] 日 K 预取完成：${n} 个标的`);
+    save();
+  };
+  boot().catch((e) => console.error('[gangtise] 启动同步失败：', e.message));
+  const timers = [
+    setInterval(() => runGangtisePoll(new Date()).catch((e) => console.error('[gangtise]', e.message)), Number(process.env.GANGTISE_POLL_MS || 60000)),
+    setInterval(() => runGangtiseDaily(new Date()), 3600e3),
+  ];
+  return () => timers.forEach(clearInterval);
+}
+
 export function startJobs({ tickMs = 5000 } = {}) {
   wireEventTriggers();
   const boot = new Date();
@@ -214,5 +256,6 @@ export function startJobs({ tickMs = 5000 } = {}) {
     setInterval(() => { const now = new Date(); runChatHeatRule(now); runNewsJob(now); runCalendarJob(now); runFilingJob(now); checkSchedule(now); save(); }, 60000),
     setInterval(() => runResearchStaleRule(new Date()), 3600e3),
   ];
-  return () => timers.forEach(clearInterval);
+  const stopGts = startGangtise();
+  return () => { timers.forEach(clearInterval); stopGts(); };
 }

@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "test": "node --test test/core.test.js",
+    "test": "node --test test/",
     "reset": "node server/index.js --reset-only",
     "openclaw:install": "node scripts/install-openclaw-skill.mjs"
   },

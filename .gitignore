@@ -1,6 +1,7 @@
+# 本地数据（数据库、个人关注列表、Gangtise 缓存与积分台账）不进 git
+data/*
+!data/.gitkeep
 node_modules/
-data/db.json
-data/my-watchlist.xlsx
 *.log
 .env
 .env.*

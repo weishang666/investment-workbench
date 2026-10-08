@@ -24,11 +24,42 @@ node server/index.js --reset   # 清空数据并重新生成演示数据
 | `DISCORD_TZ` | discord-local 运行机器的时区，默认 `Asia/Shanghai` |
 | `MOCK_SESSION` | 演示行情的美股交易时段，默认 `regular`（随时可看到 5% 异动规则），设为 `real` 则按真实美东时间 |
 | `WATCHLIST_FILE` | 首次生成数据时读取的关注列表，默认 `data/my-watchlist.xlsx`（不提交到 git）；设为空字符串则使用演示自选 |
+| `GANGTISE_ACCESS_KEY` / `GANGTISE_SECRET_KEY` | 接入 Gangtise 真实行情、财报、公告、业绩日历，见下方"Gangtise 接入" |
+| `GANGTISE_DAILY_POINTS` | 按行计费接口（公告、业绩日历）每日积分上限，默认 200 |
+| `GANGTISE_POLL_MS` | 实时行情轮询间隔，默认 60000 |
 | `PORT` | 默认 3000 |
+
+## Gangtise 接入
+
+在工作台根目录建一个 `.env`（已在 `.gitignore` 中，不会进 git），写入你在 Gangtise 开放平台拿到的密钥：
+
+```bash
+GANGTISE_ACCESS_KEY=你的AccessKey
+GANGTISE_SECRET_KEY=你的SecretKey
+```
+
+```bash
+chmod 600 .env && npm start
+```
+
+也可以直接用环境变量传入（环境变量优先于 `.env`）。启用后：
+
+| 数据 | 来源 | 频率 / 费用 |
+| --- | --- | --- |
+| 美股个股、港股、A 股、主要指数（标普 500、纳指、道指、恒指、上证、深成指）行情 | 实时快照 `quote/realtime`，有自选的市场按整市场拉取 | 交易时段每 60 秒，休市每 30 分钟；免费 |
+| 日 K（图表、20 日均量） | `kline/daily` | 启动后后台预取，每天一次；免费 |
+| 财报（营收、毛利、营业利润、净利润、EPS、FCF、现金、负债） | 美股 / 港股 / A 股三张表，累计口径拆成单季度 | 打开标的详情时拉取，每天一次；免费 |
+| 公司公告 | 美股 / 港股 / A 股公告列表 | 打开详情时拉 10 条；置顶股票每天 5 条；0.1 积分 / 行 |
+| 自选股财报日 | 业绩日历 | 每天一次，未来 30 天；0.1 积分 / 行 |
+
+- 按行计费的接口每天受 `GANGTISE_DAILY_POINTS`（默认 200）约束，用量记在 `data/gangtise-usage.json`；不调用任何 AI 类接口。
+- Gangtise 不覆盖的标的（美股 ETF、纳指 100、VIX、恒生科技、宏观商品、外汇、加密）继续使用 Mock 行情；新闻和宏观经济日历暂为 Mock。界面上每处数据都标注 `Gangtise` 或 `演示`。
+- 任何一路取数失败只影响这一路：行情保留上一次报价，财报 / K 线回退到原有数据。状态见"规则任务"页的"数据源状态"或 `GET /api/gangtise/status`。
+- 美股代码后缀（`.O` / `.N` / `.A`）以整市场快照为准，缓存在 `data/gangtise-symbols.json`。
 
 ## 哪些是演示数据
 
-当前**行情、新闻、公告、财务数据、经济日历**都是 Mock 数据（界面右上角和每处数据源都会标注），新闻链接指向 `example.com`。群聊默认也是演示数据，接入 discord-local 后为真实数据。替换真实数据源时只需实现同样的接口：
+未配置 Gangtise 时，**行情、新闻、公告、财务数据、经济日历**都是 Mock 数据（界面右上角和每处数据源都会标注），新闻链接指向 `example.com`。群聊默认也是演示数据，接入 discord-local 后为真实数据。替换真实数据源时只需实现同样的接口：
 
 - 行情：`server/providers/market.js`（`seedInstrument / tick / bars`）
 - 新闻：向 `db.articles` 写入原始文章后调用 `processNews()`，去重、聚合、实体识别、排序都会自动完成
@@ -41,7 +72,9 @@ web/                     投资大屏 · 标的详情 · 提醒中心 · 群聊�
 server/
   index.js               REST API + SSE 实时推送 + 静态文件
   store.js               持久化（data/db.json，可替换为数据库）
-  providers/market.js    行情数据源（Mock）
+  providers/market.js    行情数据源（Mock；Gangtise 覆盖的标的由真实行情接管）
+  providers/gangtise.js  Gangtise Open API 客户端（登录、token 缓存、积分台账）
+  providers/gangtiseMarket.js  Gangtise 行情 / 日 K / 财报 / 公告 / 业绩日历接入
   news.js                新闻流水线：采集→去重→事件聚合→实体识别→标的关联→摘要→重要性排序
   watchlist.js           自选分组、搜索、排序、置顶、TradingView 导入去重
   rules/priceMove.js     5% 异动（分盘前/盘中/盘后）、成交量异常、关键价位

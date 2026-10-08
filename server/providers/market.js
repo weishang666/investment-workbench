@@ -1,5 +1,7 @@
-// 行情数据源。当前为 Mock 实现：确定性随机游走生成日线 / 分时，并每隔几秒小幅跳动。
-// 接入真实行情时实现同样的接口：seedInstrument(id) / tick() / bars(id, period)。
+// 行情数据源。Mock 实现：确定性随机游走生成日线 / 分时，并每隔几秒小幅跳动。
+// 配置了 Gangtise 密钥时，股票 / 指数的报价与日 K 由 providers/gangtiseMarket.js 写入（quote.provider === 'gangtise'），
+// 这里的随机跳动只作用于 Gangtise 不覆盖的标的（美股 ETF、宏观商品、外汇、加密等）。
+// 对外接口不变：seedInstrument(id) / tick() / bars(id, period)。
 // K 线不持久化（启动后按需生成），只持久化报价。比值 / 价差标的由各腿行情计算。
 import { db, instrument } from '../store.js';
 import { sessionFor } from '../lib/sessions.js';
@@ -184,6 +186,7 @@ export function tick(now = new Date()) {
     const inst = instrument(id);
     if (inst?.type === 'spread') { spreads.push(id); continue; }
     if (inst?.type === 'econ') continue;
+    if (q.provider === 'gangtise') continue; // 真实行情由 Gangtise 轮询更新
     Object.assign(q, sessionInfo(inst?.market || 'GLOBAL', now));
     if (q.session === 'closed') continue;
     const drift = (Math.random() - 0.5) * 0.0016;
@@ -229,3 +232,4 @@ export function bars(id, period = '1D') {
 }
 
 export const MARKET_SOURCE = SOURCE;
+export const marketSource = (gangtise) => (gangtise ? 'Gangtise 实时快照（美股个股 / 港股 / A 股 / 主要指数）；美股 ETF、宏观商品、外汇、加密为 Mock' : SOURCE);

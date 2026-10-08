@@ -27,8 +27,15 @@ export const fmtTime = (iso) => new Date(iso).toLocaleString('zh-CN', { month: '
 export const fmtClock = (iso) => new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
 export function delayLabel(q) {
+  if (q.provider === 'gangtise') return '分钟级';
   return q.delayMinutes ? `延迟 ${q.delayMinutes} 分钟` : '实时';
 }
+
+/** 数据来源标记：真实数据（Gangtise）/ 演示数据（Mock） */
+export function srcBadge(real, title = '') {
+  return real ? `<span class="src src-real" title="${esc(title || 'Gangtise 真实数据')}">Gangtise</span>` : `<span class="src src-mock" title="${esc(title || '演示数据（Mock）')}">演示</span>`;
+}
+export const isReal = (q) => q?.provider === 'gangtise';
 
 const TAG = { fact: ['已确认事实', 'tag-fact'], analysis: ['AI 分析', 'tag-analysis'], unverified: ['待验证', 'tag-unverified'], note: ['你的研究', 'tag-note'] };
 

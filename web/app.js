@@ -1,5 +1,5 @@
 // 个人投研工作台前端：投资大屏 / 标的研究详情 / 提醒中心 / 群聊洞察 / 自选与导入 / 规则与任务
-import { api, esc, cls, pct, num, vol, big, code, timeAgo, fmtTime, fmtClock, delayLabel, renderBlocks, legend, chartSvg, PERIODS, toast } from './ui.js';
+import { api, esc, cls, pct, num, vol, big, code, timeAgo, fmtTime, fmtClock, delayLabel, srcBadge, isReal, renderBlocks, legend, chartSvg, PERIODS, toast } from './ui.js';
 import { initAgent, askAgent, refreshContext } from './agentPanel.js';
 
 const app = document.getElementById('app');
@@ -40,9 +40,9 @@ window.addEventListener('hashchange', () => { window.scrollTo(0, 0); router(); }
 async function loadMeta() {
   S.meta = await api('/api/meta');
   const pill = document.getElementById('meta-pill');
-  pill.textContent = `${S.meta.model === 'openclaw' ? '本机 OpenClaw' : S.meta.llm ? 'Claude' : '本地规则'} · 演示数据`;
-  pill.className = 'pill warn';
-  pill.title = `以下数据源为演示数据（Mock）：${S.meta.mocked.join('、')}。行情来源：${S.meta.marketSource}。`;
+  pill.textContent = `${S.meta.model === 'openclaw' ? '本机 OpenClaw' : S.meta.llm ? 'Claude' : '本地规则'} · ${S.meta.gangtise ? 'Gangtise 实时 + 部分演示' : '演示数据'}`;
+  pill.className = S.meta.gangtise ? 'pill' : 'pill warn';
+  pill.title = `${S.meta.real?.length ? `真实数据：${S.meta.real.join('、')}。\n` : ''}演示数据（Mock）：${S.meta.mocked.join('、')}。\n行情来源：${S.meta.marketSource}。`;
 }
 
 const searchInput = document.getElementById('global-search');
@@ -183,15 +183,19 @@ async function dashboard() {
         <div class="name">${esc(dn(m))}</div>
         <div class="price mono">${live(m.id, 'last', num(m.quote.last))}</div>
         <div class="row" style="justify-content:space-between">${live(m.id, 'pct', pct(m.quote.changePct), `class="${cls(m.quote.changePct)} mono"`)}<span class="small faint">${esc(code(m.id))}</span></div>
-        <div class="meta"><span>${m.contract ? `连续·${esc(m.contract.main)}` : esc(m.market)}</span><span>${delayLabel(m.quote)} · ${SESSION[m.quote.session]}</span></div>
+        <div class="meta"><span>${m.contract ? `连续·${esc(m.contract.main)}` : esc(m.market)} ${srcBadge(isReal(m.quote), m.quote.source)}</span><span>${delayLabel(m.quote)} · ${SESSION[m.quote.session]}</span></div>
       </div>`).join('')}</div>
 
     <div class="dash-grid">
       <div class="col-left">
-        <div class="panel"><div class="panel-head"><h3>投资事件流</h3><span class="spacer"></span><span class="small faint">已去重 · 已聚合</span></div>
+        <div class="panel"><div class="panel-head"><h3>投资事件流</h3>${srcBadge(false, '新闻暂为演示数据，后续接入真实新闻源')}<span class="spacer"></span><span class="small faint">已去重 · 已聚合</span></div>
           ${d.news.slice(0, 7).map((e, i) => eventItem(e, i === 0)).join('') || '<div class="empty">暂无事件</div>'}</div>
-        <div class="panel"><div class="panel-head"><h3>经济日历</h3></div>
-          ${d.calendar.map((c) => `<div class="cal-row"><span class="small ${new Date(c.time) < Date.now() ? 'faint' : ''}">${fmtTime(c.time)}</span>
+        <div class="panel"><div class="panel-head"><h3>经济日历 · 财报日</h3><span class="spacer"></span><span class="small faint">宏观数据 ${srcBadge(false, '宏观经济日历暂为演示数据')} · 自选股财报日 ${srcBadge(d.calendar.some((c) => c.kind === 'earnings'), 'Gangtise 业绩日历')}</span></div>
+          ${d.calendar.map((c) => c.kind === 'earnings'
+            ? `<div class="cal-row"><span class="small">${esc(c.time.slice(0, 10))}</span>
+            <span>${stars(c.importance)} <a href="#/stock/${encodeURIComponent(c.symbol)}">${esc(c.country)}</a> ${esc(c.event)}</span>
+            <span class="cal-vals">${srcBadge(true, c.source)}</span></div>`
+            : `<div class="cal-row"><span class="small ${new Date(c.time) < Date.now() ? 'faint' : ''}">${fmtTime(c.time)}</span>
             <span>${stars(c.importance)} <span class="small muted">${esc(c.country)}</span> ${esc(c.event)}</span>
             <span class="cal-vals">前值 ${c.previous}${esc(c.unit)} · 预期 ${c.forecast}${esc(c.unit)} · ${c.actual != null ? `<b class="${cls(c.actual - c.forecast)}">公布 ${c.actual}${esc(c.unit)}</b>` : '<span class="faint">待公布</span>'}</span></div>`).join('')}</div>
       </div>
@@ -205,7 +209,7 @@ async function dashboard() {
             <td class="num mono">${live(i.symbol, 'last', num(i.quote.last))}</td>
             <td class="num">${live(i.symbol, 'pct', pct(i.quote.changePct), `class="${cls(i.quote.changePct)} mono"`)}</td>
             <td class="num mono">${live(i.symbol, 'vol', vol(i.quote.volume))}</td>
-            <td class="small">${i.moved ? '<span class="flag move">异动</span> ' : ''}<span class="faint">${SESSION[i.quote.session]}${i.quote.delayMinutes ? ` · 延迟${i.quote.delayMinutes}分` : ''}</span></td>
+            <td class="small">${i.moved ? '<span class="flag move">异动</span> ' : ''}<span class="faint">${SESSION[i.quote.session]}${!isReal(i.quote) && i.quote.delayMinutes ? ` · 延迟${i.quote.delayMinutes}分` : ''}</span> ${srcBadge(isReal(i.quote), i.quote.source)}</td>
             <td><a class="small" href="#/stock/${encodeURIComponent(i.symbol)}">研究 →</a></td></tr>`).join('')}
           </tbody></table></div>
           <div class="chart-box" id="focus-chart"></div>
@@ -295,7 +299,7 @@ async function stockPage(id) {
       <div><span>最高 / 最低</span><b class="mono">${num(q.high)} / ${num(q.low)}</b></div>
       ${q.volume != null ? `<div><span>成交量</span><b class="mono">${live(d.id, 'vol', vol(q.volume))}</b></div>` : ''}
       ${q.marketCap ? `<div><span>市值</span><b class="mono">${big(q.marketCap)}</b></div>` : ''}
-      <div><span>数据来源</span><b class="small">${esc(q.source)}</b></div>
+      <div><span>数据来源</span><b class="small">${srcBadge(isReal(q), q.source)} ${esc(q.source)}${q.asOf ? ` · 交易所时间 ${esc(q.asOf)}` : ''}</b></div>
       <div><span>行情时间</span><b class="mono small">${live(d.id, 'time', fmtClock(q.updatedAt))}</b></div>
       ${d.contract ? `<div><span>合约</span><b class="small">${d.contract.kind === 'continuous' ? '连续合约' : '具体合约'} · 当前 ${esc(d.contract.current)} · 主力 ${esc(d.contract.main)}</b></div><div style="grid-column: span 2"><span>换月规则</span><b class="small">${esc(d.contract.rollRule)}</b></div>` : ''}
     </div>
@@ -306,7 +310,7 @@ async function stockPage(id) {
         ${isStock && d.financials ? financialPanel(d) : ''}
         ${hasCompany ? `<div class="panel" id="sec-company"><div class="panel-head"><h3>AI 公司研究</h3><span class="ai-badge">AI 分析</span><span class="spacer"></span><button class="btn sm" data-ask="分析一下${esc(d.name)}">让 OpenClaw 重新分析</button></div><div id="company-body" class="empty">加载中…</div></div>` : ''}
         <div class="panel"><div class="panel-head"><h3>相关新闻</h3><span class="spacer"></span><span class="small faint">${d.news.length} 个事件</span></div>${d.news.map((e, i) => eventItem(e, i === 0)).join('') || '<div class="empty">暂无相关事件</div>'}</div>
-        ${isStock ? `<div class="panel"><div class="panel-head"><h3>公司公告</h3><span class="small faint">官方来源优先</span></div>${d.filings.map((f) => `<div class="msg"><span class="cat">${esc(f.type)}</span> <a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.title)}</a><div class="who">${esc(f.source)} · ${fmtTime(f.filedAt)} · ${esc(f.summary)}</div></div>`).join('') || '<div class="empty">暂无公告</div>'}</div>` : ''}
+        ${isStock ? `<div class="panel"><div class="panel-head"><h3>公司公告</h3><span class="small faint">官方来源优先</span></div>${d.filings.map((f) => `<div class="msg"><span class="cat">${esc(f.type)}</span> ${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.title)}</a>` : esc(f.title)} ${srcBadge(!/演示/.test(f.source), f.source)}<div class="who">${esc(f.source)} · ${fmtTime(f.filedAt)}${f.summary ? ` · ${esc(f.summary)}` : ''}</div></div>`).join('') || '<div class="empty">暂无公告</div>'}</div>` : ''}
         ${chatPanel(d)}
       </div>
       <div>
@@ -339,7 +343,7 @@ function financialPanel(d) {
   const qs = f.quarters.slice(-6);
   const rows = [['营收', 'revenue', 'revenueYoY', 'revenueQoQ'], ['毛利润', 'grossProfit'], ['营业利润', 'operatingIncome'], ['净利润', 'netIncome', 'netIncomeYoY'], ['EPS', 'eps', 'epsYoY'], ['自由现金流', 'fcf', 'fcfYoY'], ['现金', 'cash'], ['负债', 'debt'], ['毛利率 %', 'grossMargin'], ['净利率 %', 'netMargin']];
   const e = d.earnings;
-  return `<div class="panel"><div class="panel-head"><h3>财务数据</h3><span class="small faint">单位：${esc(f.currency)} 百万 · ${esc(f.source)}</span></div>
+  return `<div class="panel"><div class="panel-head"><h3>财务数据</h3>${srcBadge(f.real, f.source)}<span class="spacer"></span><span class="small faint">单位：${esc(f.currency)} 百万 · ${esc(f.source)}</span></div>
     <div class="table-wrap"><table class="grid"><thead><tr><th>指标</th>${qs.map((x) => `<th class="num">${x.period}</th>`).join('')}</tr></thead><tbody>
     ${rows.map(([label, k, yoy, qoq]) => `<tr><td>${label}</td>${qs.map((x) => `<td class="num mono">${num(x[k], k === 'eps' ? 2 : 1)}${yoy && x[yoy] != null ? `<div class="small ${cls(x[yoy])}">同比 ${pct(x[yoy])}</div>` : ''}${qoq && x[qoq] != null ? `<div class="small faint">环比 ${pct(x[qoq])}</div>` : ''}</td>`).join('')}</tr>`).join('')}
     </tbody></table></div>
@@ -615,6 +619,7 @@ async function settingsPage() {
       <div class="small">AI 对话：${meta.model === 'openclaw' ? `本机 OpenClaw（${esc(oc.url)}，agent ${esc(oc.agent)}）` : meta.llm ? `Claude（${esc(meta.model)}）` : '本地规则；设置 <code>OPENCLAW_TOKEN</code> 接入本机 OpenClaw'}</div>
       <div class="small">异动分析与日报：${oc.hooks ? `交给本机 OpenClaw${oc.pending.length ? `，进行中 ${oc.pending.length} 项` : ''}，超时回退本地规则` : '本地规则；设置 <code>OPENCLAW_HOOKS_TOKEN</code> 交给 OpenClaw'}</div>
       ${oc.lastResults.length ? `<div class="small faint">OpenClaw 最近回写：${oc.lastResults.map((r) => `${esc(r.title)}（${timeAgo(r.createdAt)}）`).join('；')}</div>` : ''}
+      ${meta.gangtise ? `<div class="small">Gangtise：${meta.real.map(esc).join('、')} · 最近轮询 ${meta.gangtise.lastPoll ? fmtClock(meta.gangtise.lastPoll) : '—'}${meta.gangtise.lastError ? ` · <span class="down">最近错误：${esc(meta.gangtise.lastError)}</span>` : ''} · 今日积分 ${meta.gangtise.usage.points}/${meta.gangtise.usage.cap}</div>` : '<div class="small">Gangtise：未配置（在 <code>.env</code> 写入 <code>GANGTISE_ACCESS_KEY</code> / <code>GANGTISE_SECRET_KEY</code>）</div>'}
       <div class="small">演示数据（Mock）：${meta.mocked.map(esc).join('、')}</div>
       <div class="small">群聊：${meta.discord ? 'discord-local 已接入' : '演示数据；设置 <code>DISCORD_MESSAGES_DIR</code> 接入 discord-local'}</div>
       <div class="small">美股交易时段：${meta.mockSession === 'real' ? '按真实美东时间' : `演示模式固定为"${esc(SESSION[meta.mockSession] || meta.mockSession)}"（<code>MOCK_SESSION=real</code> 切换为真实时间）`}</div></div>

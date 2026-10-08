@@ -4,6 +4,7 @@
 import { db, instrument } from '../store.js';
 import { createAlert } from '../alerts.js';
 import { watchedSymbols } from '../watchlist.js';
+import { sessionProgress } from '../lib/sessions.js';
 
 export function changePct(last, prevClose) {
   if (!prevClose) return 0;
@@ -62,7 +63,9 @@ export function runVolumeRule(now = new Date()) {
   for (const id of watchedSymbols('stock')) {
     const q = db.quotes[id];
     if (!q?.avgVolume20 || q.session !== 'regular') continue;
-    const progress = Math.max(0.15, Math.min(1, (db.intraday[id]?.length || 0) / 390));
+    // 真实行情按交易所时间算进度；Mock 行情按分时点数
+    const real = q.provider === 'gangtise' ? sessionProgress(instrument(id)?.market, now) : null;
+    const progress = Math.max(0.15, Math.min(1, real ?? (db.intraday[id]?.length || 0) / 390));
     const ratio = q.volume / (q.avgVolume20 * progress);
     if (ratio < db.settings.volume.ratio) continue;
     const a = createAlert({

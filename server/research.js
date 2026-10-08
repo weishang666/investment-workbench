@@ -126,8 +126,8 @@ export function financialMetrics(symbol) {
     const pct = (a, b) => (b ? +(((a - b) / Math.abs(b)) * 100).toFixed(1) : null);
     return {
       ...r,
-      grossMargin: +((r.grossProfit / r.revenue) * 100).toFixed(1),
-      netMargin: +((r.netIncome / r.revenue) * 100).toFixed(1),
+      grossMargin: r.revenue && r.grossProfit != null ? +((r.grossProfit / r.revenue) * 100).toFixed(1) : null,
+      netMargin: r.revenue && r.netIncome != null ? +((r.netIncome / r.revenue) * 100).toFixed(1) : null,
       revenueYoY: prevY ? pct(r.revenue, prevY.revenue) : null,
       revenueQoQ: prevQ ? pct(r.revenue, prevQ.revenue) : null,
       netIncomeYoY: prevY ? pct(r.netIncome, prevY.netIncome) : null,
@@ -135,7 +135,8 @@ export function financialMetrics(symbol) {
       fcfYoY: prevY ? pct(r.fcf, prevY.fcf) : null,
     };
   });
-  return { symbol, currency: instrument(symbol)?.currency || 'USD', unit: '百万', source: 'Mock 财务数据（演示）', quarters: out };
+  const meta = db.financialsMeta?.[symbol];
+  return { symbol, currency: meta?.currency || instrument(symbol)?.currency || 'USD', unit: '百万', source: meta?.source || 'Mock 财务数据（演示）', real: !!meta, quarters: out };
 }
 
 /** 财报变化：最新季度 vs 上一季度 / 去年同期（确定性部分）。 */
@@ -149,8 +150,8 @@ export function earningsChanges(symbol) {
       { metric: '营收', value: cur.revenue, yoy: cur.revenueYoY, qoq: cur.revenueQoQ },
       { metric: '净利润', value: cur.netIncome, yoy: cur.netIncomeYoY },
       { metric: '自由现金流', value: cur.fcf, yoy: cur.fcfYoY },
-      { metric: '毛利率', value: cur.grossMargin, delta: +(cur.grossMargin - prev.grossMargin).toFixed(1), unit: 'pct' },
-      { metric: '净利率', value: cur.netMargin, delta: +(cur.netMargin - prev.netMargin).toFixed(1), unit: 'pct' },
+      { metric: '毛利率', value: cur.grossMargin, delta: cur.grossMargin != null && prev?.grossMargin != null ? +(cur.grossMargin - prev.grossMargin).toFixed(1) : null, unit: 'pct' },
+      { metric: '净利率', value: cur.netMargin, delta: cur.netMargin != null && prev?.netMargin != null ? +(cur.netMargin - prev.netMargin).toFixed(1) : null, unit: 'pct' },
     ],
     guidance: cur.guidance,
   };
