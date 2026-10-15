@@ -247,3 +247,9 @@ select { max-width: 100%; }
 .src { display: inline-block; font-size: 10px; line-height: 14px; padding: 0 5px; border-radius: 3px; border: 1px solid; vertical-align: middle; white-space: nowrap; }
 .src-real { color: var(--fact); border-color: rgba(63, 182, 255, .45); }
 .src-mock { color: var(--unverified); border-color: rgba(255, 181, 71, .45); }
+
+/* 登录 / 只读账号 */
+.login-box { max-width: 320px; margin: 12vh auto; display: flex; flex-direction: column; gap: 10px; }
+.user-chip a { margin-left: 6px; }
+body[data-role="viewer"] [data-nav="watchlist"], body[data-role="viewer"] [data-nav="settings"],
+body[data-role="viewer"] .agent-fab, body[data-role="guest"] .agent-fab, body[data-role="guest"] .nav, body[data-role="guest"] .search, body[data-role="guest"] #meta-pill { display: none; }

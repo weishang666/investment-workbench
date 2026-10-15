@@ -46,7 +46,7 @@ async function post(path, body, token, timeoutMs) {
   try { return JSON.parse(text); } catch { return { text }; }
 }
 
-const PAGE = { dashboard: '投资大屏', stock: '标的详情', alerts: '提醒中心', chat: '群聊洞察', watchlist: '自选与导入', macro: '宏观指标', settings: '规则与任务' };
+const PAGE = { dashboard: '投资大屏', events: '投资事件流', stock: '标的详情', alerts: '提醒中心', chat: '群聊洞察', watchlist: '自选与导入', macro: '宏观指标', settings: '规则与任务' };
 
 /** 聊天桥接：返回 OpenClaw 的原始文本 */
 export async function chat(question, context = {}, sessionId) {

@@ -1,6 +1,7 @@
 // 个人投研工作台前端：投资大屏 / 标的研究详情 / 提醒中心 / 群聊洞察 / 自选与导入 / 规则与任务
 import { api, esc, cls, pct, num, vol, big, code, timeAgo, fmtTime, fmtClock, delayLabel, srcBadge, isReal, renderBlocks, legend, chartSvg, PERIODS, toast } from './ui.js';
 import { initAgent, askAgent, refreshContext } from './agentPanel.js';
+import { ensureLogin, usersPanel } from './auth.js';
 
 const app = document.getElementById('app');
 const S = { route: null, ctx: { page: 'dashboard' }, dash: null, focus: null, groupTab: null, period: 'intraday', meta: null, stock: null, detailPeriod: 'intraday', expanded: new Set() };
@@ -15,6 +16,7 @@ const routes = [
   [/^#\/stock\/(.+)$/, (m) => stockPage(decodeURIComponent(m[1]))],
   [/^#\/alerts$/, () => alertsPage()],
   [/^#\/macro$/, () => macroPage()],
+  [/^#\/events$/, () => eventsPage()],
   [/^#\/chat$/, () => chatPage()],
   [/^#\/watchlist$/, () => watchlistPage()],
   [/^#\/settings$/, () => settingsPage()],
@@ -188,8 +190,10 @@ async function dashboard() {
 
     <div class="dash-grid">
       <div class="col-left">
-        <div class="panel"><div class="panel-head"><h3>投资事件流</h3>${srcBadge(false, '新闻暂为演示数据，后续接入真实新闻源')}<span class="spacer"></span><span class="small faint">已去重 · 已聚合</span></div>
+        <div class="panel"><div class="panel-head"><h3>投资事件流</h3>${S.meta?.news?.real?.length && !S.meta.news.mock ? srcBadge(true, S.meta.news.real.join(' + '), '实时') : srcBadge(false, '新闻暂为演示数据；财联社电报 / Finnhub 可用后自动切换')}<span class="spacer"></span><a class="small" href="#/events">全部 →</a></div>
           ${d.news.slice(0, 7).map((e, i) => eventItem(e, i === 0)).join('') || '<div class="empty">暂无事件</div>'}</div>
+        ${d.zsxq?.length ? `<div class="panel"><div class="panel-head"><h3>知识星球 · 404K Semi-AI</h3><span class="spacer"></span><a class="small" href="#/events">全部 →</a></div>
+          ${d.zsxq.slice(0, 5).map((e) => eventItem(e, false)).join('')}</div>` : ''}
         <div class="panel"><div class="panel-head"><h3>经济日历 · 财报日</h3><span class="spacer"></span><span class="small faint">宏观数据 ${srcBadge(false, '宏观经济日历暂为演示数据')} · 自选股财报日 ${srcBadge(d.calendar.some((c) => c.kind === 'earnings'), 'Gangtise 业绩日历')}</span></div>
           ${d.calendar.map((c) => c.kind === 'earnings'
             ? `<div class="cal-row"><span class="small">${esc(c.time.slice(0, 10))}</span>
@@ -450,22 +454,49 @@ async function alertsPage(status = S.alertStatus || 'open', type = S.alertType |
   bindAlertActions(app);
 }
 
+// ================= 投资事件流 =================
+async function eventsPage() {
+  S.ctx = { page: 'events' };
+  const [main, zsxq] = await Promise.all([api('/api/news?feed=main&limit=80'), api('/api/news?feed=zsxq&limit=80')]);
+  const col = (id, title, badge, list) => `<div class="panel"><div class="panel-head"><h3>${title}</h3>${badge}<span class="spacer"></span><input data-evq="${id}" placeholder="搜索标题或标的" style="width:150px" /></div>
+    <div id="ev-${id}">${list.map((e, i) => eventItem(e, i === 0)).join('') || '<div class="empty">暂无事件</div>'}</div></div>`;
+  app.innerHTML = `<div class="two-col"><div>
+    ${col('main', '投资事件流', S.meta?.news?.real?.length && !S.meta.news.mock ? srcBadge(true, S.meta.news.real.join(' + '), '实时') : srcBadge(false, '新闻暂为演示数据'), main)}
+  </div><div>
+    ${col('zsxq', '知识星球 · 404K Semi-AI', srcBadge(true, '知识星球', '同步'), zsxq)}
+  </div></div>`;
+  bindToggles(app);
+  app.querySelectorAll('[data-evq]').forEach((inp) => { inp.onkeydown = async (e) => {
+    if (e.key !== 'Enter') return;
+    const box = document.getElementById(`ev-${inp.dataset.evq}`);
+    const list = await api(`/api/news?feed=${inp.dataset.evq}&limit=80${inp.value.trim() ? `&q=${encodeURIComponent(inp.value.trim())}` : ''}`);
+    box.innerHTML = list.map((ev, i) => eventItem(ev, i === 0)).join('') || '<div class="empty">没有匹配的事件</div>';
+    bindToggles(box);
+  }; });
+}
+
 // ================= 群聊洞察 =================
 async function chatPage(minutes = S.chatMinutes || 60) {
   S.ctx = { page: 'chat' }; S.chatMinutes = minutes;
   const feed = S.chatFeed || '';
   const [hot, view, msgs] = await Promise.all([api(`/api/chat/hot?minutes=${minutes}`), api('/api/chat/view'), api(`/api/chat/messages?limit=60${feed ? `&group=${encodeURIComponent(feed)}` : ''}`)]);
+  const favs = view.favorites || [];
+  const isFav = (id) => favs.includes(id);
+  const favFirst = (list, idOf) => [...list].sort((x, y) => isFav(idOf(y)) - isFav(idOf(x)));
+  // 常看博主：合并拉取最新消息，单独一栏放在最前面
+  const favMsgs = favs.length ? (await Promise.all(favs.map((id) => api(`/api/chat/messages?limit=20&group=${encodeURIComponent(id)}`)))).flat().sort((x, y) => y.time.localeCompare(x.time)).slice(0, 30) : [];
+  const favBox = (id) => `<label class="small" title="常看的博主靠前显示"><input type="checkbox" data-fav="${esc(id)}" ${isFav(id) ? 'checked' : ''} /> 常看</label>`;
   const W = [[60, '1 小时'], [720, '半日'], [1440, '每日'], [4320, '3 天']];
   const srcName = (id) => view.sources.find((x) => x.id === id)?.name;
   const loose = view.channels.filter((c) => !c.sourceId && !c.hidden);
-  const feedOpts = [['', '全部来源'], ...view.sources.map((x) => [`src:${x.id}`, `【来源】${x.name}`]), ...loose.map((c) => [c.id, c.name])];
+  const feedOpts = [['', '全部来源'], ...favFirst(view.sources, (x) => `src:${x.id}`).map((x) => [`src:${x.id}`, `${isFav(`src:${x.id}`) ? '★ ' : ''}【来源】${x.name}`]), ...favFirst(loose, (c) => c.id).map((c) => [c.id, `${isFav(c.id) ? '★ ' : ''}${c.name}`])];
   // 频道按服务器（名称里第一个"/"之前）分组
   const servers = new Map();
   for (const c of view.channels) { const k = c.name.includes('/') ? c.name.split('/')[0] : '其他'; if (!servers.has(k)) servers.set(k, []); servers.get(k).push(c); }
   const short = (c) => (c.name.includes('/') ? c.name.slice(c.name.indexOf('/') + 1) : c.name);
   const chRow = (c) => `<tr class="${c.hidden ? 'faint' : ''}"><td>${esc(short(c))}</td><td class="num">${c.messages}</td><td class="small">${c.topUsers.map((u) => esc(u.user)).join('、')}</td>
     <td><select data-src="${esc(c.id)}"><option value="">—</option>${view.sources.map((x) => `<option value="${esc(x.id)}" ${x.id === c.sourceId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></td>
-    <td class="num"><label class="small"><input type="checkbox" data-hg="${esc(c.id)}" ${c.hidden ? 'checked' : ''} /> 屏蔽</label></td></tr>`;
+    <td class="num">${c.sourceId ? '' : favBox(c.id)} <label class="small"><input type="checkbox" data-hg="${esc(c.id)}" ${c.hidden ? 'checked' : ''} /> 屏蔽</label></td></tr>`;
   app.innerHTML = `<div class="two-col"><div>
     <div class="panel"><div class="panel-head"><h3>跨群热度</h3><span class="spacer"></span><div class="tabs">${W.map(([m, l]) => `<button class="tab ${m === minutes ? 'active' : ''}" data-m="${m}">${l}</button>`).join('')}</div></div>
       <div class="table-wrap"><table class="grid"><thead><tr><th>标的</th><th class="num">有效讨论群</th><th class="num">独立讨论群</th><th class="num">人数</th><th class="num">消息</th><th class="num">热度变化</th><th>话题</th></tr></thead><tbody>
@@ -476,11 +507,12 @@ async function chatPage(minutes = S.chatMinutes || 60) {
       <div class="disclaimer">群聊热度仅代表关注度，不代表投资建议或买卖信号。</div></div>
     <div class="panel"><div class="panel-head"><h3>来源与屏蔽</h3><span class="spacer"></span><input id="src-new" placeholder="新来源名，如 硅谷照见" style="width:150px" /><button class="btn sm" id="src-add">新建来源</button></div>
       <div class="small muted" style="margin-bottom:8px">把同一个博主的多个频道归到一个"来源"里合并查看；不想看的频道勾选屏蔽，不想看的人在右侧消息里点"屏蔽此人"。</div>
-      <div class="row wrap" style="margin-bottom:8px">${view.sources.map((x) => `<span class="chip">${esc(x.name)} · ${x.groupIds.length} 个频道 <a href="#" data-rnsrc="${esc(x.id)}" title="改名">✎</a> <a href="#" data-delsrc="${esc(x.id)}" title="删除来源">×</a></span>`).join('') || '<span class="small faint">还没有来源</span>'}</div>
+      <div class="row wrap" style="margin-bottom:8px">${favFirst(view.sources, (x) => `src:${x.id}`).map((x) => `<span class="chip">${favBox(`src:${x.id}`)} ${esc(x.name)} · ${x.groupIds.length} 个频道 <a href="#" data-rnsrc="${esc(x.id)}" title="改名">✎</a> <a href="#" data-delsrc="${esc(x.id)}" title="删除来源">×</a></span>`).join('') || '<span class="small faint">还没有来源</span>'}</div>
       ${[...servers].map(([k, list]) => `<details class="evidence" ${S.openServer === k ? 'open' : ''} data-server="${esc(k)}"><summary><b>${esc(k)}</b> · ${list.length} 个频道${list.some((c) => c.hidden) ? ` · 已屏蔽 ${list.filter((c) => c.hidden).length}` : ''}</summary>
-        <div class="table-wrap"><table class="grid"><thead><tr><th>频道</th><th class="num">消息</th><th>主要发言人</th><th>来源</th><th></th></tr></thead><tbody>${list.sort((x, y) => y.messages - x.messages).map(chRow).join('')}</tbody></table></div></details>`).join('')}
+        <div class="table-wrap"><table class="grid"><thead><tr><th>频道</th><th class="num">消息</th><th>主要发言人</th><th>来源</th><th></th></tr></thead><tbody>${list.sort((x, y) => isFav(y.id) - isFav(x.id) || y.messages - x.messages).map(chRow).join('')}</tbody></table></div></details>`).join('')}
       <div style="margin-top:10px"><b class="small">已屏蔽的人</b> ${view.hiddenUsers.map((u) => `<span class="chip">${esc(u)} <a href="#" data-unhu="${esc(u)}" title="取消屏蔽">×</a></span>`).join('') || '<span class="small faint">无</span>'}</div></div>
   </div><div>
+    ${favs.length ? `<div class="panel"><div class="panel-head"><h3>常看博主</h3><span class="small faint">${favs.map((id) => esc(id.startsWith('src:') ? view.sources.find((x) => `src:${x.id}` === id)?.name || '' : view.channels.find((ch) => ch.id === id)?.name || '')).filter(Boolean).join('、')}</span></div><div id="fav-msgs">${msgList(favMsgs)}</div></div>` : ''}
     <div class="panel"><div class="panel-head"><h3>最新消息</h3><span class="tag tag-unverified">未经证实来源</span><span class="spacer"></span>
       <select id="chat-feed">${feedOpts.map(([v, l]) => `<option value="${esc(v)}" ${v === feed ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select><input id="chat-q" placeholder="搜索内容或标的" /></div><div id="chat-msgs">${msgList(msgs)}</div></div>
   </div></div>`;
@@ -502,9 +534,10 @@ async function chatPage(minutes = S.chatMinutes || 60) {
     const ch = sel.dataset.src;
     putView({ sources: sourcesWith((x) => ({ ...x, groupIds: x.id === sel.value ? [...x.groupIds.filter((g) => g !== ch), ch] : x.groupIds.filter((g) => g !== ch) })) });
   }; });
+  app.querySelectorAll('[data-fav]').forEach((cb) => { cb.onchange = () => putView({ favorites: cb.checked ? [...favs, cb.dataset.fav] : favs.filter((f) => f !== cb.dataset.fav) }); });
   app.querySelectorAll('[data-hg]').forEach((cb) => { cb.onchange = () => putView({ hiddenGroups: cb.checked ? [...view.hiddenGroups, cb.dataset.hg] : view.hiddenGroups.filter((g) => g !== cb.dataset.hg) }); });
   app.querySelectorAll('[data-unhu]').forEach((a) => { a.onclick = (e) => { e.preventDefault(); putView({ hiddenUsers: view.hiddenUsers.filter((u) => u !== a.dataset.unhu) }); }; });
-  const bindHide = () => document.querySelectorAll('#chat-msgs [data-hu]').forEach((b) => { b.onclick = () => { if (confirm(`屏蔽「${b.dataset.hu}」？之后不再显示此人的消息，也不计入热度。可在"来源与屏蔽"里取消。`)) putView({ hiddenUsers: [...view.hiddenUsers, b.dataset.hu] }); }; });
+  const bindHide = () => document.querySelectorAll('#chat-msgs [data-hu], #fav-msgs [data-hu]').forEach((b) => { b.onclick = () => { if (confirm(`屏蔽「${b.dataset.hu}」？之后不再显示此人的消息，也不计入热度。可在"来源与屏蔽"里取消。`)) putView({ hiddenUsers: [...view.hiddenUsers, b.dataset.hu] }); }; });
   bindHide();
   const q = document.getElementById('chat-q');
   q.onkeydown = async (e) => { if (e.key === 'Enter') { document.getElementById('chat-msgs').innerHTML = msgList(await api(`/api/chat/messages?q=${encodeURIComponent(q.value)}&limit=50${feed ? `&group=${encodeURIComponent(feed)}` : ''}`)); bindHide(); } };
@@ -624,6 +657,7 @@ async function settingsPage() {
       <div class="small">群聊：${meta.discord ? 'discord-local 已接入' : '演示数据；设置 <code>DISCORD_MESSAGES_DIR</code> 接入 discord-local'}</div>
       <div class="small">美股交易时段：${meta.mockSession === 'real' ? '按真实美东时间' : `演示模式固定为"${esc(SESSION[meta.mockSession] || meta.mockSession)}"（<code>MOCK_SESSION=real</code> 切换为真实时间）`}</div></div>
   </div></div>`;
+  usersPanel(app.querySelector('.two-col > div:last-child') || app);
   app.querySelectorAll('[data-run]').forEach((b) => { b.onclick = async () => { b.disabled = true; const r = await api(`/api/jobs/${b.dataset.run}/run`, { method: 'POST' }); toast(r?.dispatched ? '已交给 OpenClaw' : '任务已运行', b.closest('.row').firstElementChild.textContent); settingsPage(); }; });
   document.getElementById('save-settings').onclick = async () => {
     const n = (id) => Number(document.getElementById(id).value);
@@ -640,6 +674,9 @@ async function settingsPage() {
 }
 
 // ---------------- 启动 ----------------
-loadMeta().catch(() => {});
-connectStream();
-router();
+ensureLogin().then((me) => {
+  if (!me) return; // 公网入口未登录：显示登录页
+  loadMeta().catch(() => {});
+  connectStream();
+  router();
+}).catch((e) => { app.innerHTML = `<div class="panel"><b>无法连接工作台</b><div class="muted">${esc(e.message)}</div></div>`; });

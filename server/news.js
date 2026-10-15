@@ -19,6 +19,51 @@ const IMPACT_HINTS = {
   product: () => '新产品发布对估值的影响取决于商业化进度，短期影响通常有限。',
 };
 
+// 真实新闻没有事件类型，按关键词粗分（规则推断，仅用于重要性权重与影响模板）
+const TYPE_RULES = [
+  ['macro_data', /\bCPI\b|\bPPI\b|\bPMI\b|\bGDP\b|非农|失业率|零售销售|社融|\bM2\b|通胀|payrolls|jobless claims|inflation data/i],
+  ['central_bank', /美联储|央行|降息|加息|降准|利率决议|\bLPR\b|鲍威尔|\bFOMC\b|\bFed\b|\bECB\b|rate cut|rate hike|Powell/i],
+  ['earnings', /财报|业绩|净利润|营收|季报|年报|半年报|预增|预亏|earnings|quarterly results|\bEPS\b|revenue (beat|miss)|guidance/i],
+  ['regulation', /监管|立案|处罚|罚款|证监会|反垄断|调查|制裁|antitrust|probe|lawsuit|investigation|sanction/i],
+  ['commodity_supply', /OPEC|减产|增产|原油|油价|crude|oil price/i],
+  ['company_deal', /签署|签订|中标|订单|收购|并购|重组|战略合作|合同|acquire|acquisition|merger|partnership|contract|stake/i],
+  ['company_operating', /交付|销量|出货|产能|投产|量产|deliveries|shipments|production/i],
+  ['product', /发布|推出|新品|上市|launch|unveil/i],
+];
+export function inferEventType(text) {
+  for (const [type, re] of TYPE_RULES) if (re.test(text)) return type;
+  return 'other';
+}
+
+// 真实新闻的实体识别比群聊更严格：导入关注列表时由名称拆出的通用英文单词（ai、labs、energy…）、
+// "美元"这类会命中金额的词都不用；美股代码按大写原文匹配（避免 NOW / BE 这类代码命中普通单词）。
+const GENERIC_CJK = new Set(['美元', '指数', '汇率', '大盘', '科技', '能源', '控股', '集团']);
+const WORD_TICKERS = new Set(['AI', 'US', 'IT', 'ON', 'BE', 'ALL', 'ARE', 'NOW', 'ONE', 'GO', 'SO', 'FOR', 'CAN', 'NET', 'KEYS', 'FIX', 'OPEN', 'LOW', 'HAS', 'AN', 'OR', 'DO', 'BIG', 'EV', 'PE', 'GDP', 'CPI', 'ETF', 'IPO', 'USD', 'LNG', 'CEO', 'GPU', 'EU', 'UK', 'API', 'AM', 'PM', 'NEW', 'OUT', 'RUN', 'BY', 'AT', 'IN', 'TV', 'MP', 'VG', 'NB', 'IPX', 'CME']);
+const ENT_VER = 5; // 识别规则变化时加一，让已缓存的文章重新识别
+let mentionIdx = { n: -1 };
+function feedIndex() {
+  if (mentionIdx.n === db.instruments.length) return mentionIdx;
+  const isLatinWord = (x) => /^[a-z.&-]+$/i.test(x);
+  const list = db.instruments.filter((i) => i.type !== 'spread').map((i) => {
+    const code = i.id.split(':')[1] || '';
+    const aliases = (i.aliases || []).filter((x) => !GENERIC_CJK.has(x) && !(i.imported && isLatinWord(x)) && !/^\d{1,4}$/.test(x)); // 港股 4 位代码会命中"1378.6亿"之类的数字
+    // 丢掉"代码式"的名称（如 IREN、BRK.B、港股 1378），代码另行匹配
+    const drop = (n) => (n && ((i.imported && isLatinWord(n) && !/[a-z]/.test(n.replace(/^./, ''))) || /^\d{1,4}$/.test(n)) ? undefined : n);
+    return { id: i.id, aliases, name: drop(i.name), enName: drop(i.enName) };
+  });
+  const tickers = db.instruments.filter((i) => i.type === 'stock' && i.market === 'US').map((i) => [i.id, i.id.split(':')[1]])
+    .filter(([, c]) => /^[A-Z][A-Z.]{1,5}$/.test(c) && !WORD_TICKERS.has(c))
+    .map(([id, c]) => [id, new RegExp(`(^|[^A-Za-z0-9])\\$?${c.replace('.', '\\.')}(?![A-Za-z0-9])`)]);
+  mentionIdx = { n: db.instruments.length, list, tickers };
+  return mentionIdx;
+}
+export function feedMentions(text) {
+  const { list, tickers } = feedIndex();
+  const out = new Set(findMentions(text, list));
+  for (const [id, re] of tickers) if (re.test(text)) out.add(id);
+  return [...out];
+}
+
 function tokens(text) {
   const t = String(text).toLowerCase();
   const out = new Set();
@@ -49,7 +94,15 @@ export function processNews(now = new Date()) {
     const k = a.url || a.title;
     if (seen.has(k) || seen.has(a.title)) continue;
     seen.add(k); seen.add(a.title);
-    a.entities = findMentions(`${a.title} ${a.lead}`, db.instruments);
+    // 实体识别结果按文章缓存（标的库变化时重算）；数据源显式给出的标的（symbols）一定保留
+    const entN = `${db.instruments.length}:${ENT_VER}`;
+    if (!a.entities || a.entN !== entN) {
+      const text = `${a.title} ${a.lead}`;
+      // symbolsOnly：数据源已在全文上做过识别（如知识星球去掉了券商署名），不再按标题 + 摘要重复识别
+      a.entities = [...new Set([...(a.symbols || []), ...(a.symbolsOnly ? [] : a.feed ? feedMentions(text) : findMentions(text, db.instruments))])];
+      a.entN = entN;
+    }
+    if (!a.eventType && a.feed) a.eventType = inferEventType(`${a.title} ${a.lead}`);
     a._tok = tokens(`${a.title} ${a.lead}`);
     a._acr = acronyms(`${a.title} ${a.lead}`);
     articles.push(a);
@@ -59,10 +112,14 @@ export function processNews(now = new Date()) {
   for (const a of articles) {
     const t = new Date(a.publishedAt).getTime();
     let best = null; let bestScore = 0;
-    for (const c of clusters) {
-      if (c.eventType !== a.eventType) continue;
-      if (Math.abs(t - c.t) > 12 * 3600e3) continue;
+    // clusters 按首篇时间升序生成，倒序遍历，超出 12h 窗口即可停止
+    for (let i = clusters.length - 1; i >= 0; i--) {
+      const c = clusters[i];
+      if (t - c.t > 12 * 3600e3) break;
+      if (c.eventType !== (a.eventType || 'other')) continue;
       const sim = jaccard(a._tok, c.tok);
+      // 真实快讯量大，同一标的的不同消息不能仅凭实体重合就聚成一个事件
+      if (a.feed && sim < 0.2) continue;
       const ent = a.entities.length && a.entities.some((e) => c.entities.has(e)) ? 0.25 : 0;
       const acr = [...a._acr].some((x) => c.acr.has(x)) ? 0.25 : 0; // 共同的专有缩写（CPI、OPEC 等）
       const score = sim + ent + acr;
@@ -110,6 +167,8 @@ function buildEvent(c, watched, now) {
     importanceParts: { recency: +recency.toFixed(2), impact: +impact.toFixed(2), relevance },
     sourceCount: c.articles.length,
     hasOfficial: c.articles.some((a) => a.sourceType === 'official'),
+    // 真实快讯：只对 30 分钟内的新消息提醒（启动回补的旧消息不提醒）；单一来源的"其他"类消息不提醒（避免刷屏），财联社加红（A 级）除外
+    alertable: !c.articles.every((a) => a.feed) || (ageH < 0.5 && (c.eventType !== 'other' || c.articles.length > 1 || c.articles.some((a) => a.level === 'A'))),
     sources: sorted.map((a) => ({ id: a.id, source: a.source, sourceType: a.sourceType, title: a.title, url: a.url, publishedAt: a.publishedAt })),
   };
   ev.allText = c.articles.map((a) => `${a.title} ${a.lead}`).join(' ');
@@ -124,8 +183,13 @@ function buildEvent(c, watched, now) {
   return ev;
 }
 
-export function searchNews({ query, symbol, since, limit = 10 } = {}) {
+/** 事件是否来自知识星球（帖子单独成栏展示，不混进投资事件流）。 */
+export const isZsxqEvent = (e) => e.sources?.length > 0 && e.sources.every((x) => String(x.source).startsWith('知识星球'));
+
+export function searchNews({ query, symbol, since, feed, limit = 10 } = {}) {
   let list = db.events;
+  if (feed === 'zsxq') list = list.filter(isZsxqEvent);
+  else if (feed === 'main') list = list.filter((e) => !isZsxqEvent(e));
   if (symbol) list = list.filter((e) => e.entities.includes(symbol));
   if (since) list = list.filter((e) => e.latest >= since);
   if (query) {

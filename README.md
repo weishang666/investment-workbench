@@ -27,6 +27,8 @@ node server/index.js --reset   # 清空数据并重新生成演示数据
 | `GANGTISE_ACCESS_KEY` / `GANGTISE_SECRET_KEY` | 接入 Gangtise 真实行情、财报、公告、业绩日历，见下方"Gangtise 接入" |
 | `GANGTISE_DAILY_POINTS` | 按行计费接口（公告、业绩日历）每日积分上限，默认 200 |
 | `GANGTISE_POLL_MS` | 实时行情轮询间隔，默认 60000 |
+| `FINNHUB_API_KEY` | 美股新闻（Finnhub 免费档），见下方"真实新闻源"；不设置则不拉美股新闻 |
+| `NEWS_CLS` | 设为 `0` 关闭财联社电报（默认开启，无需密钥） |
 | `PORT` | 默认 3000 |
 
 ## Gangtise 接入
@@ -53,9 +55,29 @@ chmod 600 .env && npm start
 | 自选股财报日 | 业绩日历 | 每天一次，未来 30 天；0.1 积分 / 行 |
 
 - 按行计费的接口每天受 `GANGTISE_DAILY_POINTS`（默认 200）约束，用量记在 `data/gangtise-usage.json`；不调用任何 AI 类接口。
-- Gangtise 不覆盖的标的（美股 ETF、纳指 100、VIX、恒生科技、宏观商品、外汇、加密）继续使用 Mock 行情；新闻和宏观经济日历暂为 Mock。界面上每处数据都标注 `Gangtise` 或 `演示`。
+- Gangtise 不覆盖的标的（美股 ETF、纳指 100、VIX、恒生科技、宏观商品、外汇、加密）继续使用 Mock 行情；宏观经济日历暂为 Mock，新闻见下方"真实新闻源"。界面上每处数据都标注 `Gangtise` 或 `演示`。
 - 任何一路取数失败只影响这一路：行情保留上一次报价，财报 / K 线回退到原有数据。状态见"规则任务"页的"数据源状态"或 `GET /api/gangtise/status`。
 - 美股代码后缀（`.O` / `.N` / `.A`）以整市场快照为准，缓存在 `data/gangtise-symbols.json`。
+
+## 真实新闻源
+
+| 来源 | 覆盖 | 频率 | 配置 |
+| --- | --- | --- | --- |
+| 财联社电报 | A 股 / 港股 / 宏观快讯；电报自带的股票标签映射到自选标的 | 每 60 秒，启动时回补约 300 条 | 无需密钥（非官方接口 `cls.cn/v1/roll/get_roll_list`，失败时只告警一次并保留已有数据） |
+| Finnhub | 市场要闻 + 自选中每只美股个股（跳过 ETF / 指数）的 company-news | 约每 5 分钟一轮，节流 ~50 次/分钟（免费档上限 60） | `.env` 里设置 `FINNHUB_API_KEY` |
+
+Finnhub 启用步骤：到 https://finnhub.io/register 免费注册拿 API key，写入 `.env`：
+
+```bash
+FINNHUB_API_KEY=你的key
+```
+
+然后重启（Docker：`docker restart invest-workbench`）。密钥不会出现在日志中。
+
+- 任一真实源入库成功后自动清掉演示新闻；两个源都不可用时继续使用演示新闻。
+- 文章按 url 去重，只保留近 3 天、最多 4000 条；数据源给出的标的（Finnhub 查询的股票、财联社的股票标签）一定会关联，文本识别作为补充。
+- 真实快讯只对 30 分钟内的新消息推送"新闻"提醒（启动回补的旧消息不提醒）；单一来源、未归类的消息不提醒，避免刷屏；财报、监管、央行等类别及财联社加红电报照常提醒。
+- 状态：`GET /api/news/status`。
 
 ## 哪些是演示数据
 

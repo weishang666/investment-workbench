@@ -75,7 +75,7 @@ export function runNewsJob(now = new Date()) {
   const fresh = processNews(now);
   const watched = new Set(watchedSymbols());
   for (const e of db.events) {
-    if (e.importance < db.settings.news.majorImportance) continue;
+    if (e.importance < db.settings.news.majorImportance || e.alertable === false) continue;
     if (!e.entities.some((x) => watched.has(x)) && e.eventType !== 'macro_data' && e.eventType !== 'central_bank') continue;
     createAlert({
       type: 'news', symbol: e.watchedEntities[0] || e.entities[0] || null, severity: 'medium', dedupeKey: `news:${e.key}`, now,

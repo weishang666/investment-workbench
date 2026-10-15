@@ -30,7 +30,7 @@ export function refreshContext() { if (state.open) renderContext(); }
 function ctxLabel() {
   const c = getContext();
   if (c.page === 'stock' && c.symbol) return `当前页面：${c.name || c.symbol} 详情页，提问时无需重复股票名称`;
-  return `当前页面：${{ dashboard: '投资大屏', alerts: '提醒中心', chat: '群聊洞察', watchlist: '自选与导入', settings: '规则与任务' }[c.page] || c.page}`;
+  return `当前页面：${{ dashboard: '投资大屏', events: '投资事件流', alerts: '提醒中心', chat: '群聊洞察', watchlist: '自选与导入', settings: '规则与任务' }[c.page] || c.page}`;
 }
 
 function renderContext() {

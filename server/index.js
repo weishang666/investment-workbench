@@ -14,19 +14,23 @@ import * as RS from './research.js';
 import { listAlerts, setStatus, counts } from './alerts.js';
 import { hotSymbols, symbolStats, searchChats, groupDigest, ingestMessages, tagMessages, chatView, visibleMessages } from './rules/chatHeat.js';
 import { searchNews } from './news.js';
+import { startNewsFeeds, newsFeedState } from './newsFeeds.js';
 import { ask, listSessions, getSession, llmEnabled, engine } from './agent/agent.js';
 import { toolManifest, runTool } from './agent/tools.js';
 import { startJobs, runScheduled, SCHEDULE, runNewsJob, acceptResult } from './agent/jobs.js';
 import * as OpenClaw from './agent/openclaw.js';
 import { startDiscordPolling, parseJsonl } from './connectors/discordLocal.js';
+import { startZsxqPolling, zsxqState } from './connectors/zsxq.js';
 import { SESSION_LABEL } from './lib/sessions.js';
 import { COMPANY_KB } from './agent/companyKb.js';
 import { companyResearch } from './agent/analysis.js';
+import * as Auth from './auth.js';
 
 loadEnv(); // 读取根目录 .env（Gangtise 密钥等），已存在的环境变量优先
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const WEB = path.join(ROOT, 'web');
 const PORT = Number(process.env.PORT || 3000);
+const PUBLIC_PORT = Number(process.env.PUBLIC_PORT || 0); // 公网隧道入口，必须登录
 
 if (process.argv.includes('--reset') || process.argv.includes('--reset-only')) reset();
 if (!load()) { seed(); flush(); console.log('[store] 已生成演示数据 data/db.json'); }
@@ -47,14 +51,18 @@ const quoteView = (id) => {
 
 route('GET', '/api/meta', () => {
   const gts = GM.enabled();
+  const nf = newsFeedState();
+  const newsReal = [nf.cls.enabled && '财联社电报', nf.finnhub.enabled && 'Finnhub 美股新闻'].filter(Boolean);
   return {
     llm: llmEnabled() || OpenClaw.chatEnabled(), model: engine(), openclaw: { chat: OpenClaw.chatEnabled(), hooks: OpenClaw.hooksEnabled() },
     marketSource: marketSource(gts), gangtise: gts ? { ...GM.pollState(), usage: usageToday() } : null,
     discord: !!process.env.DISCORD_MESSAGES_DIR, mockSession: process.env.MOCK_SESSION || 'regular',
-    mocked: (gts ? ['美股 ETF / 宏观商品 / 外汇 / 加密行情', '新闻', '宏观经济日历'] : ['行情', '新闻', '公告', '财务数据', '经济日历']).concat(process.env.DISCORD_MESSAGES_DIR ? [] : ['群聊']),
-    real: gts ? ['股票 / 指数行情（Gangtise）', '日 K', '财报', '公告', '业绩日历'] : [],
+    mocked: (gts ? ['美股 ETF / 宏观商品 / 外汇 / 加密行情', '新闻', '宏观经济日历'] : ['行情', '新闻', '公告', '财务数据', '经济日历']).filter((x) => x !== '新闻' || nf.mock || !newsReal.length).concat(process.env.DISCORD_MESSAGES_DIR ? [] : ['群聊']),
+    real: (gts ? ['股票 / 指数行情（Gangtise）', '日 K', '财报', '公告', '业绩日历'] : []).concat(newsReal.length ? [`新闻（${newsReal.join(' + ')}）`] : []),
+    news: { ...nf, real: newsReal },
   };
 });
+route('GET', '/api/news/status', () => ({ ...newsFeedState(), zsxq: zsxqState() }));
 route('GET', '/api/gangtise/status', () => ({ enabled: GM.enabled(), ...GM.pollState(), usage: usageToday() }));
 
 // 按需拉取 Gangtise 数据：超时就先返回已有数据（Mock 或上次缓存），后台继续拉
@@ -71,7 +79,8 @@ route('GET', '/api/dashboard', (_, q) => {
   tagMessages();
   return {
     macro: strip, macroCount: new Set(macroItems.map((i) => i.symbol)).size,
-    news: db.events.slice(0, 12),
+    news: searchNews({ feed: 'main', limit: 12 }),
+    zsxq: searchNews({ feed: 'zsxq', limit: 6 }),
     // 宏观日历全部展示；自选股财报日只展示未来 14 天内最近的 12 条
     calendar: [...db.calendar.filter((c) => c.kind !== 'earnings'),
       ...db.calendar.filter((c) => c.kind === 'earnings' && new Date(c.time) - Date.now() < 14 * 86400e3 && new Date(c.time) - Date.now() > -86400e3).sort((a, b) => a.time.localeCompare(b.time)).slice(0, 12)]
@@ -141,7 +150,7 @@ route('GET', '/api/research/:id/diff', ({ id }, q) => {
 route('POST', '/api/suggestions/:sid', ({ sid }, _, b) => RS.resolveSuggestion(sid, b.status));
 
 // 新闻 / 日历
-route('GET', '/api/news', (_, q) => searchNews({ query: q.get('q') || undefined, symbol: q.get('symbol') || undefined, limit: Number(q.get('limit') || 30) }));
+route('GET', '/api/news', (_, q) => searchNews({ query: q.get('q') || undefined, symbol: q.get('symbol') || undefined, feed: q.get('feed') || undefined, limit: Number(q.get('limit') || 30) }));
 route('GET', '/api/briefs', () => db.briefs);
 
 // 群聊
@@ -186,6 +195,8 @@ route('PUT', '/api/chat/view', (_, __, b) => {
   }
   if (b.hiddenGroups) v.hiddenGroups = strs(b.hiddenGroups);
   if (b.hiddenUsers) v.hiddenUsers = strs(b.hiddenUsers);
+  // 常看：来源用 "src:<id>"，单独频道用频道 id；勾选后在列表和"常看博主"栏里靠前显示
+  if (b.favorites) v.favorites = strs(b.favorites);
   save();
   return v;
 });
@@ -221,6 +232,12 @@ route('POST', '/api/jobs/:name/run', ({ name }) => runScheduled(name));
 route('GET', '/api/settings', () => db.settings);
 route('PUT', '/api/settings', (_, __, b) => { for (const k of Object.keys(b)) db.settings[k] = { ...db.settings[k], ...b[k] }; save(); return db.settings; });
 
+// 账号管理（仅管理员）
+route('GET', '/api/users', () => Auth.listUsers());
+route('POST', '/api/users', (_, __, b) => Auth.addUser(b));
+route('PUT', '/api/users/:uid', ({ uid: id }, _, b) => Auth.updateUser(id, b));
+route('DELETE', '/api/users/:uid', ({ uid: id }) => Auth.deleteUser(id));
+
 function notFound() { throw Object.assign(new Error('未找到'), { status: 404 }); }
 
 // ---------- SSE ----------
@@ -243,8 +260,37 @@ async function readBody(req) {
   return s ? JSON.parse(s) : {};
 }
 
-export const server = http.createServer(async (req, res) => {
+const sendJson = (res, status, out, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(out ?? null)); };
+const LOCAL_USER = { name: '本机', role: 'admin' };
+
+// 公网入口的登录与权限检查。返回 null 表示请求已处理完（登录 / 拒绝），否则返回当前用户
+async function gate(req, res, url) {
+  const isPublic = PUBLIC_PORT && req.socket.localPort === PUBLIC_PORT;
+  const p = url.pathname;
+  if (p === '/api/me') {
+    const u = isPublic ? Auth.sessionUser(req) : LOCAL_USER;
+    sendJson(res, u ? 200 : 401, u ? { user: { name: u.name, role: u.role }, local: !isPublic, roles: Auth.ROLES } : { error: '请先登录' });
+    return null;
+  }
+  if (p === '/api/auth/login' && req.method === 'POST') {
+    try {
+      const r = Auth.login(req, await readBody(req));
+      sendJson(res, 200, { user: r.user }, { 'Set-Cookie': r.cookie });
+    } catch (e) { sendJson(res, e.status || 500, { error: e.message }); }
+    return null;
+  }
+  if (p === '/api/auth/logout' && req.method === 'POST') { sendJson(res, 200, { ok: true }, { 'Set-Cookie': Auth.logoutCookie(req) }); return null; }
+  if (!isPublic) return LOCAL_USER;
+  const u = Auth.sessionUser(req);
+  if (!u) { sendJson(res, 401, { error: '请先登录' }); return null; }
+  if (!Auth.allowed(u, req.method, p)) { sendJson(res, 403, { error: '只读账号没有这个权限' }); return null; }
+  return u;
+}
+
+async function handle(req, res) {
   const url = new URL(req.url, 'http://localhost');
+  let user = LOCAL_USER;
+  if (url.pathname.startsWith('/api/')) { user = await gate(req, res, url); if (!user) return; }
   if (url.pathname === '/api/stream') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.write('retry: 3000\n\n');
@@ -260,7 +306,7 @@ export const server = http.createServer(async (req, res) => {
       try {
         const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
         const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req) : {};
-        const out = await r.handler(params, url.searchParams, body);
+        const out = Auth.redact(user, url.pathname, await r.handler(params, url.searchParams, body));
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(out ?? null));
       } catch (e) {
@@ -278,11 +324,15 @@ export const server = http.createServer(async (req, res) => {
   if (!file.startsWith(WEB) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(WEB, 'index.html');
   res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
   fs.createReadStream(file).pipe(res);
-});
+}
+export const server = http.createServer(handle);
 
 if (!process.argv.includes('--no-listen')) {
   startJobs();
+  startNewsFeeds((now) => runNewsJob(now));
   startDiscordPolling();
+  startZsxqPolling((now) => { runNewsJob(now); save(); });
+  if (PUBLIC_PORT) http.createServer(handle).listen(PUBLIC_PORT, () => console.log(`公网入口（需登录）：端口 ${PUBLIC_PORT}${Auth.hasUsers() ? '' : '。还没有账号，先运行 node scripts/users.mjs add <用户名> admin'}`));
   server.listen(PORT, () => {
     console.log(`个人投研工作台已启动：http://localhost:${PORT}`);
     const e = engine();

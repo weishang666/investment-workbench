@@ -208,3 +208,30 @@ test('OpenClaw 回写：带标签文本解析为分块，挂到提醒并还原�
   assert.equal(M.store.db.alerts.find((x) => x.id === a.id).analysis.source, 'openclaw');
   assert.throws(() => acceptResult({ kind: 'premarket', text: '  ' }), /结果为空/);
 });
+
+test('知识星球：帖子映射为新闻源文章，识别标的并进入事件流', async () => {
+  const Z = await import('../server/connectors/zsxq.js');
+  const { ingestArticles } = await import('../server/newsFeeds.js');
+  const now = new Date();
+  const ct = new Date(now.getTime() - 3600e3 + 8 * 3600e3).toISOString().replace('Z', '+0800');
+  const rec = { topic_id: '123456', group_id: '48885454415828', group_name: '404K Semi-Ai', create_time: ct, title: '英伟达...', text: '英伟达下一代AI机柜采用新材料。\n\n详见附件。', tags: ['算力'], author: '测试', files: [{ name: '英伟达PTFE战略.pdf', size: 1, file_id: '9' }] };
+  const [a] = Z.parseJsonl(`${JSON.stringify(rec)}\n{坏行\n`);
+  assert.equal(a.id, 'a_zsxq123456');
+  assert.equal(a.feed, 'zsxq');
+  assert.equal(a.title, '英伟达下一代AI机柜采用新材料。');
+  assert.equal(a.publishedAt, new Date(now.getTime() - 3600e3).toISOString().replace(/\.\d{3}Z$/, (m) => m));
+  assert.match(a.lead, /附件：英伟达PTFE战略\.pdf/);
+  assert.ok(a.symbols.includes('NASDAQ:NVDA'));
+  assert.equal(ingestArticles([a], now), 1);
+  assert.equal(ingestArticles([a], now), 0); // 按 url 去重
+  M.news.processNews(now);
+  const ev = M.news.searchNews({ symbol: 'NASDAQ:NVDA', limit: 100 }).find((e) => e.sources.some((s) => s.id === a.id));
+  assert.ok(ev, '帖子应出现在标的事件流中');
+  assert.equal(ev.sources.find((s) => s.id === a.id).source, '知识星球·404K Semi-Ai');
+  // 券商作为观点出处不关联标的；券商自身的经营消息照常识别
+  assert.equal(Z.stripBrokerCites('摩根大通测算DRAM涨价').includes('摩根大通'), false);
+  assert.equal(Z.stripBrokerCites('摩根大通（J.P. Morgan）在报告中指出').includes('摩根大通'), false);
+  assert.ok(Z.stripBrokerCites('摩根大通第三季度净利润增长').includes('摩根大通'));
+  const [cite] = Z.parseJsonl(JSON.stringify({ ...rec, topic_id: '7', text: '摩根大通测算，英伟达下季度营收超预期。' }));
+  assert.ok(cite.symbolsOnly && !cite.symbols.includes('NYSE:JPM') && cite.symbols.includes('NASDAQ:NVDA'));
+});

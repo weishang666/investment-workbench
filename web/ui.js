@@ -2,6 +2,7 @@
 export const api = async (path, opts = {}) => {
   const res = await fetch(path, { headers: { 'content-type': 'application/json' }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && !path.startsWith('/api/auth/')) location.reload(); // 登录过期：刷新回到登录页
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 };
@@ -32,8 +33,8 @@ export function delayLabel(q) {
 }
 
 /** 数据来源标记：真实数据（Gangtise）/ 演示数据（Mock） */
-export function srcBadge(real, title = '') {
-  return real ? `<span class="src src-real" title="${esc(title || 'Gangtise 真实数据')}">Gangtise</span>` : `<span class="src src-mock" title="${esc(title || '演示数据（Mock）')}">演示</span>`;
+export function srcBadge(real, title = '', label = 'Gangtise') {
+  return real ? `<span class="src src-real" title="${esc(title || 'Gangtise 真实数据')}">${esc(label)}</span>` : `<span class="src src-mock" title="${esc(title || '演示数据（Mock）')}">演示</span>`;
 }
 export const isReal = (q) => q?.provider === 'gangtise';
 
