@@ -253,3 +253,9 @@ select { max-width: 100%; }
 .user-chip a { margin-left: 6px; }
 body[data-role="viewer"] [data-nav="watchlist"], body[data-role="viewer"] [data-nav="settings"],
 body[data-role="viewer"] .agent-fab, body[data-role="guest"] .agent-fab, body[data-role="guest"] .nav, body[data-role="guest"] .search, body[data-role="guest"] #meta-pill { display: none; }
+
+/* 个股页 TradingView 风格图表 */
+.tv-chart { position: relative; height: 440px; margin-top: 8px; border-radius: 8px; overflow: hidden; }
+.tv-legend { position: absolute; top: 6px; left: 8px; background: color-mix(in srgb, var(--panel) 80%, transparent); border-radius: 6px; padding: 2px 6px; z-index: 3; pointer-events: none; font-size: 12px; display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; max-width: calc(100% - 90px); }
+.tv-legend b { color: var(--text); }
+@media (max-width: 720px) { .tv-chart { height: 320px; } .tv-legend { font-size: 11px; } }

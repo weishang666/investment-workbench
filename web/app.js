@@ -1,10 +1,11 @@
 // 个人投研工作台前端：投资大屏 / 标的研究详情 / 提醒中心 / 群聊洞察 / 自选与导入 / 规则与任务
+import { mountChart, updateLive, TIMEFRAMES } from './tvChart.js';
 import { api, esc, cls, pct, num, vol, big, code, timeAgo, fmtTime, fmtClock, delayLabel, srcBadge, isReal, renderBlocks, legend, chartSvg, PERIODS, toast } from './ui.js';
 import { initAgent, askAgent, refreshContext } from './agentPanel.js';
 import { ensureLogin, usersPanel } from './auth.js';
 
 const app = document.getElementById('app');
-const S = { route: null, ctx: { page: 'dashboard' }, dash: null, focus: null, groupTab: null, period: 'intraday', meta: null, stock: null, detailPeriod: 'intraday', expanded: new Set() };
+const S = { route: null, ctx: { page: 'dashboard' }, dash: null, focus: null, groupTab: null, period: 'intraday', meta: null, stock: null, detailTf: 'D', expanded: new Set() };
 
 try { const ud = localStorage.getItem('updown'); if (ud) document.documentElement.dataset.updown = ud; } catch { /* 无痕模式 */ }
 
@@ -79,6 +80,7 @@ function softRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(r
 
 function onQuotes(list) {
   for (const q of list) {
+    updateLive(q);
     document.querySelectorAll(`[data-q="${CSS.escape(q.id)}"]`).forEach((el) => {
       const f = el.dataset.f;
       if (f === 'last') el.textContent = num(q.last);
@@ -335,10 +337,22 @@ async function stockPage(id) {
 
 async function renderDetailChart() {
   const d = S.stock; const box = document.getElementById('sec-chart');
-  const series = await api(`/api/bars/${encodeURIComponent(d.id)}?period=${S.detailPeriod}`);
-  box.innerHTML = `<div class="panel-head"><h3>K 线与走势</h3><span class="spacer"></span><div class="tabs">${PERIODS.map(([k, l]) => `<button class="tab ${k === S.detailPeriod ? 'active' : ''}" data-period="${k}">${l}</button>`).join('')}</div></div>
-    ${chartSvg(series, { height: 280, prevClose: series.kind === 'line' ? d.quote.prevClose : undefined })}`;
-  box.querySelectorAll('[data-period]').forEach((b) => { b.onclick = () => { S.detailPeriod = b.dataset.period; renderDetailChart(); }; });
+  if (!box) return;
+  const tf = S.detailTf;
+  if (!box.querySelector('.tv-chart')) {
+    box.innerHTML = `<div class="panel-head"><h3>K 线与走势</h3><span class="small faint" id="chart-note"></span><span class="spacer"></span><div class="tabs" id="chart-tabs"></div></div>
+      <div class="tv-chart" id="tv-chart"></div>`;
+  }
+  box.querySelector('#chart-tabs').innerHTML = TIMEFRAMES.map(([k, l]) => `<button class="tab ${k === tf ? 'active' : ''}" data-tf="${k}">${l}</button>`).join('');
+  box.querySelectorAll('[data-tf]').forEach((b) => { b.onclick = () => { S.detailTf = b.dataset.tf; renderDetailChart(); }; });
+  const data = await api(`/api/chart/${encodeURIComponent(d.id)}?tf=${tf}`);
+  if (S.stock !== d || S.detailTf !== tf) return; // 已切走
+  mountChart(box.querySelector('#tv-chart'), data, { name: `${code(d.id)} ${d.name}` });
+  const note = [];
+  if (tf !== 'intraday') note.push(data.realDaily ? '真实日 K' : '演示日 K');
+  else note.push('服务启动后累计的分时');
+  if (!data.levels.length) note.push('在右侧「交易计划」填止损 / 目标价后会画在图上');
+  box.querySelector('#chart-note').textContent = ` · ${note.join(' · ')}`;
 }
 
 function financialPanel(d) {

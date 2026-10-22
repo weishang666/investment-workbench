@@ -25,6 +25,7 @@ import { SESSION_LABEL } from './lib/sessions.js';
 import { COMPANY_KB } from './agent/companyKb.js';
 import { companyResearch } from './agent/analysis.js';
 import * as Auth from './auth.js';
+import { chartData } from './chart.js';
 
 loadEnv(); // 读取根目录 .env（Gangtise 密钥等），已存在的环境变量优先
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -140,6 +141,10 @@ route('GET', '/api/stock/:id', async ({ id }) => {
     alerts: listAlerts({ symbol: id, status: 'all', limit: 20 }),
   };
 });
+route('GET', '/api/chart/:id', async ({ id }, q) => {
+  await within(GM.ensureDaily(id), 8000);
+  return chartData(id, q.get('tf') || 'D') || notFound();
+});
 route('GET', '/api/stock/:id/company', async ({ id }) => companyResearch(id));
 route('PUT', '/api/research/:id', ({ id }, _, b) => RS.saveResearch(id, b.patch || b, { reason: b.reason || '用户更新' }));
 route('GET', '/api/research/:id/diff', ({ id }, q) => {
@@ -244,7 +249,7 @@ function notFound() { throw Object.assign(new Error('未找到'), { status: 404 
 const clients = new Set();
 on('*', (event, payload) => {
   if (!['quotes', 'alert', 'alert-updated', 'brief'].includes(event)) return;
-  const data = event === 'quotes' ? payload.map((q) => ({ id: q.id, last: q.last, change: q.change, changePct: q.changePct, volume: q.volume, updatedAt: q.updatedAt, session: q.session })) : payload;
+  const data = event === 'quotes' ? payload.map((q) => ({ id: q.id, last: q.last, change: q.change, changePct: q.changePct, volume: q.volume, updatedAt: q.updatedAt, session: q.session, tradeDate: q.tradeDate, open: q.open, high: q.high, low: q.low })) : payload;
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) res.write(msg);
 });
